@@ -1,84 +1,76 @@
 import streamlit as st
-import fitz  # PyMuPDF สำหรับจัดการไฟล์ PDF
-from PIL import Image, ImageDraw # เพิ่ม ImageDraw สำหรับวาดวงกลม
+import fitz  
+from PIL import Image
 import io
+import google.generativeai as genai
 
-st.set_page_config(page_title="Hydraulic & Structural Review", layout="wide")
+# ---------------------------------------------------------
+# นำ API Key ที่ได้จาก Google AI Studio มาใส่ในเครื่องหมายคำพูดด้านล่าง
+API_KEY = "ใส่_API_KEY_ของคุณที่นี่"
+# ---------------------------------------------------------
 
-st.title("ระบบผู้ช่วยตรวจแบบ: วิศวกรรมชลประทานและอุทกวิทยา")
-st.markdown("อัปโหลดไฟล์ (PDF, PNG, JPG) เพื่อตรวจสอบความสอดคล้องและข้อกำหนดทางวิศวกรรม")
+st.set_page_config(page_title="Hydraulic & Civil Review", layout="wide")
+st.title("ระบบผู้ช่วยตรวจแบบ: วิศวกรรมชลประทาน วิศวกรรมโยธา")
+st.markdown("อัปโหลดไฟล์ (PDF, PNG, JPG) ระบบจะใช้ AI อ่านเนื้อหาในแบบและวิเคราะห์ทางวิศวกรรมโดยละเอียด")
 
-# 1. ปรับให้อัปโหลดได้ทั้ง PDF และรูปภาพ
-uploaded_file = st.file_uploader("เลือกไฟล์แบบแปลนของคุณ", type=["pdf", "png", "jpg", "jpeg"])
+# ตั้งค่า AI
+if API_KEY != "ใส่_API_KEY_ของคุณที่นี่":
+    genai.configure(api_key=API_KEY)
+    # ใช้โมเดล Gemini 1.5 Flash หรือ Pro ที่รองรับการอ่านรูปภาพ
+    model = genai.GenerativeModel('gemini-1.5-flash')
+else:
+    st.warning("⚠️ กรุณาใส่ API Key ในโค้ดก่อนเพื่อให้ AI ทำงานได้จริง")
 
-# --- ฟังก์ชันจำลองการวาดวงกลมสีแดง ---
-def mark_errors_on_image(image):
-    # สร้างออบเจกต์สำหรับวาดรูป
-    draw = ImageDraw.Draw(image)
-    
-    # ดึงขนาดความกว้าง ความสูง ของรูปภาพ
-    width, height = image.size
-    
-    # จำลองค่าพิกัด (x0, y0, x1, y1) ที่ AI ตรวจพบว่ามีข้อผิดพลาด
-    # ตัวอย่าง: ตีวงกลมบริเวณตำแหน่งกึ่งกลางค่อนไปทางซ้ายบนของแบบ
-    box1 = [width * 0.2, height * 0.3, width * 0.35, height * 0.45] 
-    
-    # วาดวงรี (วงกลม) สีแดง เส้นหนา 5 พิกเซล
-    draw.ellipse(box1, outline="red", width=5)
-    
-    # สามารถเพิ่มวงกลมจุดอื่นได้
-    # box2 = [width * 0.6, height * 0.7, width * 0.8, height * 0.8]
-    # draw.ellipse(box2, outline="red", width=5)
-    
-    return image
-# ---------------------------------
+uploaded_file = st.file_uploader("เลือกไฟล์แบบแปลนหรือรายการคำนวณ", type=["pdf", "png", "jpg", "jpeg"])
+
+# Prompt (คำสั่ง) ที่เราจะบังคับให้ AI ทำหน้าที่เป็นวิศวกรโยธา/ชลประทาน
+system_prompt = """
+คุณคือวิศวกรโยธาและชลประทานระดับเชี่ยวชาญ กรุณาตรวจสอบรูปภาพแบบแปลนหรือรายการคำนวณที่แนบมาอย่างละเอียด:
+1. วิเคราะห์และระบุว่านี่คืองานอะไร (เช่น อาคาร, ฝาย Labyrinth, โครงสร้างทางชลศาสตร์ หรืออื่นๆ)
+2. ตรวจสอบความถูกต้องทางวิศวกรรม เช่น ความหนาของคอนกรีต, แรงดันน้ำ (Uplift/Water Pressure), การหาค่า Factor of Safety ต่อการเลื่อนไถล หรือสัดส่วนของโครงสร้าง
+3. ตรวจสอบความสอดคล้องของตัวเลข (เช่น ระดับ Elevation) และคำผิดในแบบ
+4. สรุปข้อเสนอแนะและจุดที่ควรแก้ไขเป็นข้อๆ อย่างชัดเจน
+"""
+
+def analyze_image_with_ai(image):
+    if API_KEY == "ใส่_API_KEY_ของคุณที่นี่":
+        return "ระบบยังไม่ได้เชื่อมต่อ API Key ไม่สามารถวิเคราะห์แบบได้"
+    try:
+        response = model.generate_content([system_prompt, image])
+        return response.text
+    except Exception as e:
+        return f"เกิดข้อผิดพลาดในการวิเคราะห์: {e}"
 
 if uploaded_file is not None:
-    st.info("กำลังประมวลผลไฟล์และจำลองการวิเคราะห์...")
-    
-    # ดึงนามสกุลไฟล์มาเช็คว่าเป็น PDF หรือ รูปภาพ
+    st.info("กำลังใช้ AI อ่านไฟล์และวิเคราะห์ทางวิศวกรรม กรุณารอสักครู่...")
     file_extension = uploaded_file.name.split('.')[-1].lower()
     
-    # กรณีที่ 1: ผู้ใช้อัปโหลดไฟล์รูปภาพ (PNG, JPG)
+    # กรณี: ไฟล์รูปภาพ
     if file_extension in ["png", "jpg", "jpeg"]:
-        # เปิดไฟล์รูปภาพโดยตรง
-        original_image = Image.open(uploaded_file).convert("RGB")
+        image = Image.open(uploaded_file).convert("RGB")
+        st.subheader("แบบที่อัปโหลด")
+        st.image(image, use_column_width=True)
         
-        # นำรูปไปวาดวงกลมสีแดง
-        marked_image = mark_errors_on_image(original_image)
-        
-        st.subheader("ผลการตรวจแบบ (รูปภาพ)")
-        st.image(marked_image, use_column_width=True)
-        
-        with st.expander("📝 ผลการตรวจสอบและข้อเสนอแนะ", expanded=True):
-            st.markdown("""
-            **🔍 จุดที่ 1 (วงกลมสีแดง): การตรวจสอบความสอดคล้อง (Consistency)**
-            * **ปัญหาที่พบ:** ตัวเลขระยะ Elev. ในรูปตัด (Cross-section) ไม่ตรงกับรายการคำนวณด้านล่าง
-            * **ข้อเสนอแนะ:** กรุณาตรวจสอบระดับสันฝาย (Crest Elevation) อีกครั้ง
-
-            **💧 จุดที่ 2: ข้อเสนอแนะด้านวิศวกรรมอุทกวิทยา (Hydrology)**
-            * **ปัญหาที่พบ:** มีการสะกดคำผิดจาก "Uplift Pressure" เป็น "Uplif Pressure"
-            """, unsafe_allow_html=True)
+        with st.spinner('AI กำลังตรวจแบบ...'):
+            analysis_result = analyze_image_with_ai(image)
             
-    # กรณีที่ 2: ผู้ใช้อัปโหลดไฟล์ PDF
+        with st.expander("📝 ผลการตรวจสอบทางวิศวกรรมอย่างละเอียด", expanded=True):
+            st.write(analysis_result)
+            
+    # กรณี: ไฟล์ PDF
     elif file_extension == "pdf":
         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-        
         for page_num in range(len(doc)):
             page = doc.load_page(page_num)
             pix = page.get_pixmap(dpi=150)
             img_data = pix.tobytes("png")
-            original_image = Image.open(io.BytesIO(img_data)).convert("RGB")
-            
-            # นำรูปแต่ละหน้าไปวาดวงกลมสีแดง
-            marked_image = mark_errors_on_image(original_image)
+            image = Image.open(io.BytesIO(img_data)).convert("RGB")
             
             st.subheader(f"หน้า {page_num + 1}")
-            st.image(marked_image, use_column_width=True)
+            st.image(image, use_column_width=True)
             
-            with st.expander(f"📝 ผลการตรวจสอบและข้อเสนอแนะ (หน้า {page_num + 1})", expanded=True):
-                st.markdown("""
-                **🔍 จุดที่ 1 (วงกลมสีแดง): การออกแบบ Spillway**
-                * **ปัญหาที่พบ:** ค่าสัมประสิทธิ์การระบายน้ำ (C) ที่ใช้ในสมการ ค่อนข้างสูงเมื่อเทียบกับสัดส่วนความยาวสันฝายที่ปรากฏ
-                * **ข้อเสนอแนะ:** แนะนำให้ใช้ค่า C = 1.7 - 2.0 ตามมาตรฐานของกรมชลประทาน สำหรับฝายสันกว้าง (Broad-crested weir)
-                """, unsafe_allow_html=True)
+            with st.spinner(f'AI กำลังตรวจแบบหน้าที่ {page_num + 1}...'):
+                analysis_result = analyze_image_with_ai(image)
+                
+            with st.expander(f"📝 ผลการตรวจสอบทางวิศวกรรม (หน้า {page_num + 1})", expanded=True):
+                st.write(analysis_result)
