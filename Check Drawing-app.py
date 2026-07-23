@@ -3,6 +3,7 @@ import fitz
 from PIL import Image
 import io
 import google.generativeai as genai
+import time
 
 st.set_page_config(page_title="Hydraulic & Civil Review", layout="wide")
 st.title("ระบบผู้ช่วยตรวจแบบ: วิศวกรรมชลประทาน วิศวกรรมโยธา")
@@ -30,12 +31,12 @@ def get_valid_model():
         target_model = None
         # พยายามเลือกรุ่น Pro หรือ Flash ที่ใหม่ที่สุดที่มีในระบบ
         for name in available_models:
-            if 'pro' in name:
+            if 'flash' in name:
                 target_model = name
                 break
         if not target_model:
             for name in available_models:
-                if 'flash' in name:
+                if 'pro' in name:
                     target_model = name
                     break
         
@@ -92,6 +93,12 @@ if uploaded_file is not None and model is not None:
     elif file_extension == "pdf":
         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
         for page_num in range(len(doc)):
+            if page_num > 0:
+                cooldown_text = st.empty()
+                cooldown_text.warning("⏳ รอ 15 วินาทีเพื่อป้องกันโควต้า API เต็ม...")
+                time.sleep(15)
+                cooldown_text.empty()
+                
             page = doc.load_page(page_num)
             pix = page.get_pixmap(dpi=150)
             img_data = pix.tobytes("png")
