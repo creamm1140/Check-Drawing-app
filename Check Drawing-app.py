@@ -16,42 +16,14 @@ except:
     API_KEY = ""
     st.error("⚠️ ไม่พบ API Key กรุณาตั้งค่า GEMINI_API_KEY ในเมนู Secrets ของ Streamlit Cloud")
 
-# 2. ฟังก์ชันค้นหาและเลือกโมเดลที่ใช้งานได้จริงโดยอัตโนมัติ
-@st.cache_resource
-def get_valid_model():
-    if not API_KEY:
-        return None, "No API Key"
-    try:
-        available_models = []
-        # ค้นหาโมเดลทั้งหมดที่รองรับการอ่านภาพ (generateContent)
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                available_models.append(m.name)
-        
-        target_model = None
-        # พยายามเลือกรุ่น Pro หรือ Flash ที่ใหม่ที่สุดที่มีในระบบ
-        for name in available_models:
-            if 'flash' in name:
-                target_model = name
-                break
-        if not target_model:
-            for name in available_models:
-                if 'pro' in name:
-                    target_model = name
-                    break
-        
-        # ถ้าหาไม่เจอเลย ให้ดึงตัวแรกสุดที่ระบบมี
-        if not target_model and available_models:
-            target_model = available_models[0]
-            
-        return genai.GenerativeModel(target_model), target_model
-    except Exception as e:
-        return None, str(e)
-
-model, model_name = get_valid_model()
-
-if model:
-    st.success(f"✅ เชื่อมต่อ AI สำเร็จ! (ระบบเลือกใช้รุ่น: {model_name})")
+# 2. กำหนดโมเดลเป็นรุ่นมาตรฐานที่เสถียรที่สุดสำหรับบัญชีฟรี
+try:
+    # ล็อคชื่อโมเดลเป็น 1.5-flash เพื่อป้องกันการดึงรุ่นที่ติดสิทธิ์การใช้งาน
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    st.success("✅ เชื่อมต่อ AI สำเร็จ! (ระบบเลือกใช้รุ่น: gemini-1.5-flash)")
+except Exception as e:
+    model = None
+    st.error(f"❌ เกิดข้อผิดพลาดในการตั้งค่าโมเดล: {e}")
     
 # 3. คำสั่งเฉพาะทางสำหรับวิศวกรรมชลประทาน
 system_prompt = """
@@ -72,7 +44,6 @@ def analyze_image_with_ai(image_to_check):
 uploaded_file = st.file_uploader("เลือกไฟล์แบบแปลนหรือรายการคำนวณ", type=["pdf", "png", "jpg", "jpeg"])
 
 if uploaded_file is not None and model is not None:
-    # สร้างกล่องข้อความจำเพาะที่สามารถสั่งลบตัวเองได้
     status_text = st.empty()
     status_text.info("⏳ กำลังใช้ AI อ่านไฟล์และวิเคราะห์ทางวิศวกรรม กรุณารอสักครู่...")
     
@@ -84,7 +55,6 @@ if uploaded_file is not None and model is not None:
         
         analysis_result = analyze_image_with_ai(image)
         
-        # ลบข้อความ "กำลังโหลด..." ทิ้ง
         status_text.empty()
         
         with st.expander("📝 ผลการตรวจสอบทางวิศวกรรมอย่างละเอียด", expanded=True):
@@ -93,6 +63,7 @@ if uploaded_file is not None and model is not None:
     elif file_extension == "pdf":
         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
         for page_num in range(len(doc)):
+            # ระบบหน่วงเวลาสำหรับ PDF เพื่อป้องกัน Error 429 (Quota Exceeded)
             if page_num > 0:
                 cooldown_text = st.empty()
                 cooldown_text.warning("⏳ รอ 15 วินาทีเพื่อป้องกันโควต้า API เต็ม...")
@@ -112,5 +83,4 @@ if uploaded_file is not None and model is not None:
             with st.expander(f"📝 ผลการตรวจสอบทางวิศวกรรม (หน้า {page_num + 1})", expanded=True):
                 st.write(analysis_result)
         
-        # ลบข้อความ "กำลังโหลด..." ทิ้งเมื่อวนลูปครบทุกหน้า
         status_text.empty()
