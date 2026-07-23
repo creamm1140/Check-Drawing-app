@@ -57,7 +57,8 @@ if uploaded_file is not None:
             
         with st.expander("📝 ผลการตรวจสอบทางวิศวกรรมอย่างละเอียด", expanded=True):
             st.write(analysis_result)
-            
+            status_text.empty()
+    
     # กรณี: ไฟล์ PDF
     elif file_extension == "pdf":
         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
