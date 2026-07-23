@@ -6,7 +6,7 @@ import google.generativeai as genai
 
 # ---------------------------------------------------------
 # นำ API Key ที่ได้จาก Google AI Studio มาใส่ในเครื่องหมายคำพูดด้านล่าง
-API_KEY = "ใส่_API_KEY_ของคุณที่นี่"
+API_KEY = "AQ.Ab8RN6JdDO3_4px0LGdDz5uo8cfTlK_5dKSFK1q8_R0QIdbs5A"
 # ---------------------------------------------------------
 
 st.set_page_config(page_title="Hydraulic & Civil Review", layout="wide")
