@@ -20,7 +20,7 @@ except:
 try:
     # ล็อคชื่อโมเดลเป็น 1.5-flash เพื่อป้องกันการดึงรุ่นที่ติดสิทธิ์การใช้งาน
     model = genai.GenerativeModel('gemini-1.5-flash')
-    st.success("✅ เชื่อมต่อ AI สำเร็จ! (ระบบเลือกใช้รุ่น: gemini-1.5-flash)")
+    st.success("✅ เชื่อมต่อ AI สำเร็จ! (ระบบเลือกใช้รุ่น: gemini-1.5-flash-001)")
 except Exception as e:
     model = None
     st.error(f"❌ เกิดข้อผิดพลาดในการตั้งค่าโมเดล: {e}")
