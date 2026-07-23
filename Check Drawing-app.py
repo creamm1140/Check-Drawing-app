@@ -42,7 +42,8 @@ def analyze_image_with_ai(image):
         return f"เกิดข้อผิดพลาดในการวิเคราะห์: {e}"
 
 if uploaded_file is not None:
-    st.info("กำลังใช้ AI อ่านไฟล์และวิเคราะห์ทางวิศวกรรม กรุณารอสักครู่...")
+    status_text = st.empty()
+    status_text.info("กำลังใช้ AI อ่านไฟล์และวิเคราะห์ทางวิศวกรรม กรุณารอสักครู่...")
     file_extension = uploaded_file.name.split('.')[-1].lower()
     
     # กรณี: ไฟล์รูปภาพ
