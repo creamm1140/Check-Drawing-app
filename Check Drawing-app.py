@@ -19,8 +19,8 @@ except:
 # 2. กำหนดโมเดลเป็นรุ่นมาตรฐานที่เสถียรที่สุดสำหรับบัญชีฟรี
 try:
     # เปลี่ยนมาใช้รุ่นล่าสุดของปี 2026
-    model = genai.GenerativeModel('gemini-3.5-flash')
-    st.success("✅ เชื่อมต่อ AI สำเร็จ! (ระบบเลือกใช้รุ่น: gemini-3.5-flash)")
+    model = genai.GenerativeModel('gemini-3.5-flash-lite')
+    st.success("✅ เชื่อมต่อ AI สำเร็จ! (ระบบเลือกใช้รุ่น: gemini-3.5-flash-lite)")
 except Exception as e:
     model = None
     st.error(f"❌ เกิดข้อผิดพลาดในการตั้งค่าโมเดล: {e}")
