@@ -66,8 +66,8 @@ if uploaded_file is not None and model is not None:
             # ระบบหน่วงเวลาสำหรับ PDF เพื่อป้องกัน Error 429 (Quota Exceeded)
             if page_num > 0:
                 cooldown_text = st.empty()
-                cooldown_text.warning("⏳ รอ 30 วินาทีเพื่อป้องกันโควต้า API เต็ม...")
-                time.sleep(30)
+                cooldown_text.warning("⏳ รอ 15 วินาทีเพื่อป้องกันโควต้า API เต็ม...")
+                time.sleep(15)
                 cooldown_text.empty()
                 
             page = doc.load_page(page_num)
