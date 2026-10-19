@@ -1,4 +1,3 @@
-Python
 import streamlit as st
 import fitz  # PyMuPDF
 from PIL import Image, ImageDraw
