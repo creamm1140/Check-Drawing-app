@@ -12,19 +12,18 @@ st.title("ระบบผู้ช่วยตรวจแบบ: วิศว�
 try:
     API_KEY = st.secrets["GEMINI_API_KEY"]
     genai.configure(api_key=API_KEY)
-    # แนะนำใช้รุ่นที่เสถียรที่สุดที่คุณมี
     model = genai.GenerativeModel('gemini-3.5-flash-lite') 
 except Exception as e:
     model = None
     st.error(f"❌ เกิดข้อผิดพลาดในการเชื่อมต่อ: {e}")
 
-# 1. ปรับ Prompt ใหม่: เลิกขอพิกัด แต่ขอ "Keyword" ที่ผิดแทน
+# 1. System Prompt: บังคับให้ส่งทั้ง Keyword และ พิกัด Box_2d เผื่อไว้ใช้สำรอง
 system_prompt = """
 คุณคือวิศวกรชลประทาน วิศวกรโยธา และผู้พิสูจน์อักษรระดับเชี่ยวชาญ
 ตรวจสอบรูปภาพแบบแปลนหรือรายการคำนวณที่แนบมานี้อย่างละเอียดที่สุด:
 
 1. วิศวกรรม (Engineering): ตรวจสอบความถูกต้องของหลักการ เช่น แรงดันน้ำ (Uplift), Factor of Safety, ความหนาคอนกรีต, ระดับ Elevation
-2. คำผิด (Typo): สแกนหาคำผิดทุกตัวอักษร ทั้งภาษาไทยและศัพท์เทคนิคภาษาอังกฤษ (เช่น พิมพ์ Uplift ตกหล่น, Elevation พิมพ์ผิด)
+2. คำผิด (Typo): สแกนหาคำผิดทุกตัวอักษร ทั้งภาษาไทยและศัพท์เทคนิคภาษาอังกฤษ
 3. ข้อสังเกต (Observation): หากไม่พบจุดผิดเลย ให้เสนอแนะจุดที่ควรระวังในการก่อสร้าง
 
 คุณต้องตอบกลับมาเป็น JSON เท่านั้น โครงสร้างดังนี้:
@@ -33,12 +32,18 @@ system_prompt = """
   "issues": [
     {
       "type": "Typo หรือ Engineering หรือ Observation",
-      "error_keyword": "คำ หรือ ตัวเลข ที่ผิดเป๊ะๆ (เช่น 'Uplif', 'El. +84.000') *สำคัญมาก: ต้องสะกดให้ตรงกับในภาพเพื่อให้ระบบค้นหาพิกัดเจอ หากเป็นการแนะนำทั่วไปให้ใส่ค่าว่าง '' ",
-      "description": "อธิบายว่าผิดอย่างไร และควรแก้ไขเป็นอะไร"
+      "error_keyword": "คำ หรือ ตัวเลข ที่ผิดเป๊ะๆ (หากเป็นการแนะนำทั่วไปให้ใส่ค่าว่าง '')",
+      "description": "อธิบายว่าผิดอย่างไร และควรแก้ไขเป็นอะไร",
+      "box_2d": [ymin, xmin, ymax, xmax]
     }
   ],
   "summary": "สรุปผลการตรวจสอบของหน้านี้"
 }
+
+กฎพิกัด box_2d:
+- ใช้สเกล 0 ถึง 1000 สำหรับรูปภาพในหน้านั้นๆ (ซ้ายบน 0,0 ขวาล่าง 1000,1000)
+- ymin: บน, xmin: ซ้าย, ymax: ล่าง, xmax: ขวา
+- หากเป็นคำแนะนำภาพรวม ให้ส่ง [0, 0, 0, 0]
 """
 
 def clean_json_response(text):
@@ -49,36 +54,56 @@ def clean_json_response(text):
         return None
 
 def draw_and_annotate_on_pdf(page, issues):
-    """ฟังก์ชันวาดกรอบโดยใช้ PyMuPDF ค้นหาข้อความ (แม่นยำ 100%)"""
+    """ระบบวาดวงกลมแบบ Hybrid (ค้นหาข้อความ + ใช้พิกัด AI สำรอง)"""
+    rect_width = page.rect.width
+    rect_height = page.rect.height
+    
     for issue in issues:
         keyword = issue.get("error_keyword", "").strip()
         desc = issue.get("description", "ไม่ระบุรายละเอียด")
         i_type = issue.get("type", "Observation")
+        box = issue.get("box_2d", [0, 0, 0, 0])
         
         annot_text = f"[{i_type.upper()}]\n{desc}"
         found_coordinates = False
         
-        # 1. ถ้าระบุ Keyword ให้ใช้ระบบค้นหาข้อความใน PDF
+        # วิธีที่ 1: ค้นหาข้อความตรงๆ ใน PDF
         if keyword:
-            # ค้นหาตำแหน่งของคำนั้นในหน้า PDF ตรงๆ
             text_instances = page.search_for(keyword)
             if text_instances:
                 found_coordinates = True
                 for inst in text_instances:
-                    # วาดกรอบสีแดงทับคำที่เจอแบบเป๊ะๆ
-                    page.draw_rect(inst, color=(1, 0, 0), width=2)
+                    # ขยายกรอบให้กว้างขึ้นเล็กน้อยเพื่อวาดวงรีครอบตัวหนังสือ
+                    rect = fitz.Rect(inst.x0 - 5, inst.y0 - 5, inst.x1 + 5, inst.y1 + 5)
+                    page.draw_oval(rect, color=(1, 0, 0), width=2) # เปลี่ยนเป็นวาดวงรี (Oval) สีแดง
                     
-                    # แปะ Note ไว้ข้างๆ
                     annot = page.add_text_annot(inst.top_right, annot_text)
                     annot.set_colors(stroke=(1, 0, 0) if i_type.lower() == "typo" else (1, 0.5, 0))
                     annot.set_info(content=annot_text, title=f"ข้อผิดพลาด ({i_type})")
                     annot.update()
         
-        # 2. ถ้าหา Keyword ไม่เจอ หรือเป็นข้อเสนอแนะภาพรวม ให้แปะ Note ไว้มุมขวาบน
+        # วิธีที่ 2 (Fallback): ถ้าหาข้อความไม่เจอ (เช่น เป็นเส้น AutoCAD) ให้ใช้พิกัดจาก AI
+        if not found_coordinates and box and len(box) == 4 and box != [0, 0, 0, 0]:
+            ymin, xmin, ymax, xmax = box
+            x0 = (xmin / 1000.0) * rect_width
+            y0 = (ymin / 1000.0) * rect_height
+            x1 = (xmax / 1000.0) * rect_width
+            y1 = (ymax / 1000.0) * rect_height
+            
+            # วาดวงรีครอบพิกัดที่ AI กะระยะมาให้
+            rect = fitz.Rect(x0, y0, x1, y1)
+            page.draw_oval(rect, color=(1, 0, 0), width=2)
+            
+            annot = page.add_text_annot(fitz.Point(x1, y0), annot_text)
+            annot.set_colors(stroke=(1, 0, 0) if i_type.lower() == "typo" else (1, 0.5, 0))
+            annot.set_info(content=annot_text, title=f"ข้อผิดพลาด ({i_type})")
+            annot.update()
+            found_coordinates = True
+        
+        # วิธีที่ 3: ถ้าหาจุดชี้เป้าไม่ได้จริงๆ ให้แปะ Note ไว้มุมขวาบน
         if not found_coordinates:
-            rect_width = page.rect.width
             annot = page.add_text_annot(fitz.Point(rect_width - 50, 50), annot_text)
-            annot.set_colors(stroke=(0, 0, 1)) # สีน้ำเงินสำหรับข้อสังเกตภาพรวม
+            annot.set_colors(stroke=(0, 0, 1)) # สีน้ำเงิน
             annot.set_info(content=annot_text, title="ข้อสังเกต / ภาพรวม")
             annot.update()
 
@@ -90,20 +115,17 @@ if uploaded_file is not None and model is not None:
         
         try:
             doc = fitz.open(stream=uploaded_file.getvalue(), filetype="pdf")
-            out_pdf = fitz.open() # สร้างไฟล์ PDF เปล่าสำหรับเก็บหน้าที่แก้แล้ว
             
-            # ปรับ DPI ให้สูงขึ้นเพื่อให้ AI อ่านตัวเลขเล็กๆ ออก
+            # ปรับ DPI 150 ให้ AI เห็นตัวอักษรเล็กๆ ชัดเจนขึ้น
             current_dpi = 150 
             
             for page_num in range(len(doc)):
                 status_text.info(f"⏳ กำลังประมวลผลหน้า {page_num + 1} จาก {len(doc)}...")
                 
-                # โหลดหน้ากระดาษ
                 page = doc.load_page(page_num)
                 pix = page.get_pixmap(dpi=current_dpi)
                 img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
                 
-                # *** ส่งประมวลผลทีละหน้า เพื่อลดการหลอนของ AI ***
                 prompt_content = [system_prompt, img]
                 
                 response = model.generate_content(
@@ -116,15 +138,13 @@ if uploaded_file is not None and model is not None:
                 if result_json:
                     st.markdown(f"### 📄 หน้า {page_num + 1}: {result_json.get('project_type', 'ไม่ระบุ')}")
                     
-                    # นำผลลัพธ์ไปวาดกรอบ
+                    # เรียกฟังก์ชันวาดวงกลมสีแดง
                     draw_and_annotate_on_pdf(page, result_json.get("issues", []))
                     
-                    # เรนเดอร์ภาพโชว์บนหน้าเว็บ
                     pix_annotated = page.get_pixmap(dpi=100)
                     img_annotated = Image.open(io.BytesIO(pix_annotated.tobytes("png")))
                     st.image(img_annotated, use_column_width=True)
                     
-                    # แสดงรายงาน
                     issues_this_page = result_json.get("issues", [])
                     if issues_this_page:
                         with st.expander(f"📝 ข้อเสนอแนะ (หน้า {page_num + 1})", expanded=True):
@@ -142,20 +162,18 @@ if uploaded_file is not None and model is not None:
                     
                     st.markdown("---")
                 
-                # เคลียร์ RAM หลังจบแต่ละหน้า
                 del pix
                 del img
                 gc.collect()
 
-            # สร้างไฟล์ PDF รวมทุกหน้าสำหรับดาวน์โหลด
             out_pdf_bytes = io.BytesIO()
             doc.save(out_pdf_bytes)
             status_text.success("✅ ตรวจสอบเสร็จสมบูรณ์!")
             
             st.download_button(
-                label="📥 ดาวน์โหลดไฟล์ PDF (พร้อมกรอบแดงที่แม่นยำขึ้น)",
+                label="📥 ดาวน์โหลดไฟล์ PDF (พร้อมวงกลมสีแดง)",
                 data=out_pdf_bytes.getvalue(),
-                file_name="Reviewed_Engineering_Drawing_Fixed.pdf",
+                file_name="Reviewed_Engineering_Drawing_Circles.pdf",
                 mime="application/pdf"
             )
                 
