@@ -14,7 +14,7 @@ try:
     API_KEY = st.secrets["GEMINI_API_KEY"]
     genai.configure(api_key=API_KEY)
     # ใช้รุ่นที่รองรับ Context ยาวๆ ได้ดี และวิเคราะห์ภาพได้หลายภาพ (Gemini 1.5 Pro จะดีที่สุดสำหรับงานนี้ แต่ Flash ก็ทำได้)
-    model = genai.GenerativeModel('gemini-1.5-flash') 
+    model = genai.GenerativeModel('gemini-3.5-flash-lite') 
     st.success("✅ เชื่อมต่อ AI สำเร็จ!")
 except Exception as e:
     model = None
