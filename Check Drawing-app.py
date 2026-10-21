@@ -22,7 +22,7 @@ system_prompt = """
 คุณคือวิศวกรชลประทาน วิศวกรโยธา และผู้พิสูจน์อักษรระดับเชี่ยวชาญ
 ตรวจสอบรูปภาพแบบแปลนหรือรายการคำนวณที่แนบมานี้อย่างละเอียดที่สุด:
 
-1. วิศวกรรม (Engineering): ตรวจสอบความถูกต้องของหลักการ เช่น แรงดันน้ำ (Uplift), Factor of Safety, ความหนาคอนกรีต, ระดับ Elevation
+1. วิศวกรรม (Engineering): ตรวจสอบความถูกต้องทางด้านวิศวกรรมชลประทาน และวิศวกรรมชโยธา เช่น แรงดันน้ำ (Uplift), Factor of Safety, ความหนาคอนกรีต, ระดับ Elevation, มิติอาคาร , ความกว้าง ยาว สูง 
 2. คำผิด (Typo): สแกนหาคำผิดทุกตัวอักษร ทั้งภาษาไทยและศัพท์เทคนิคภาษาอังกฤษ
 3. ข้อสังเกต (Observation): หากไม่พบจุดผิดเลย ให้เสนอแนะจุดที่ควรระวังในการก่อสร้าง
 
@@ -32,7 +32,7 @@ system_prompt = """
   "issues": [
     {
       "type": "Typo หรือ Engineering หรือ Observation",
-      "error_keyword": "คำ หรือ ตัวเลข ที่ผิดเป๊ะๆ (หากเป็นการแนะนำทั่วไปให้ใส่ค่าว่าง '')",
+      "error_keyword": "เลือกคำที่ผิดเพียง 1-2 คำที่ปรากฏในแบบเป๊ะๆ เพื่อให้ระบบค้นหาพิกัดเจอ (ห้ามพิมพ์เป็นประโยคยาว)",
       "description": "อธิบายว่าผิดอย่างไร และควรแก้ไขเป็นอะไร",
       "box_2d": [ymin, xmin, ymax, xmax]
     }
@@ -42,8 +42,7 @@ system_prompt = """
 
 กฎพิกัด box_2d:
 - ใช้สเกล 0 ถึง 1000 สำหรับรูปภาพในหน้านั้นๆ (ซ้ายบน 0,0 ขวาล่าง 1000,1000)
-- ymin: บน, xmin: ซ้าย, ymax: ล่าง, xmax: ขวา
-- หากเป็นคำแนะนำภาพรวม ให้ส่ง [0, 0, 0, 0]
+- หากเป็นคำแนะนำภาพรวมที่ไม่มีจุดบนแบบ ให้ส่ง [0, 0, 0, 0]
 """
 
 def clean_json_response(text):
@@ -69,18 +68,20 @@ def draw_and_annotate_on_pdf(page, issues):
         
         # วิธีที่ 1: ค้นหาข้อความตรงๆ ใน PDF
         if keyword:
-            text_instances = page.search_for(keyword)
-            if text_instances:
-                found_coordinates = True
-                for inst in text_instances:
-                    # ขยายกรอบให้กว้างขึ้นเล็กน้อยเพื่อวาดวงรีครอบตัวหนังสือ
-                    rect = fitz.Rect(inst.x0 - 5, inst.y0 - 5, inst.x1 + 5, inst.y1 + 5)
-                    page.draw_oval(rect, color=(1, 0, 0), width=2) # เปลี่ยนเป็นวาดวงรี (Oval) สีแดง
-                    
-                    annot = page.add_text_annot(inst.top_right, annot_text)
-                    annot.set_colors(stroke=(1, 0, 0) if i_type.lower() == "typo" else (1, 0.5, 0))
-                    annot.set_info(content=annot_text, title=f"ข้อผิดพลาด ({i_type})")
-                    annot.update()
+    # เพิ่ม flags = fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_PRESERVE_LIGATURES เพื่อช่วยหาฟอนต์ที่เว้นวรรคแปลกๆ
+    text_instances = page.search_for(keyword, quads=True) 
+    if text_instances:
+        found_coordinates = True
+        for quad in text_instances:
+            # ใช้ quad (สี่เหลี่ยมด้านขนาน) ช่วยให้วงกรอบข้อความที่เอียงหรือหมุนในแบบแปลนได้แม่นยำขึ้น
+            rect = quad.rect
+            rect_expanded = fitz.Rect(rect.x0 - 5, rect.y0 - 5, rect.x1 + 5, rect.y1 + 5)
+            page.draw_oval(rect_expanded, color=(1, 0, 0), width=2)
+            
+            annot = page.add_text_annot(rect_expanded.top_right, annot_text)
+            annot.set_colors(stroke=(1, 0, 0) if i_type.lower() == "typo" else (1, 0.5, 0))
+            annot.set_info(content=annot_text, title=f"ข้อผิดพลาด ({i_type})")
+            annot.update()
         
         # วิธีที่ 2 (Fallback): ถ้าหาข้อความไม่เจอ (เช่น เป็นเส้น AutoCAD) ให้ใช้พิกัดจาก AI
         if not found_coordinates and box and len(box) == 4 and box != [0, 0, 0, 0]:
