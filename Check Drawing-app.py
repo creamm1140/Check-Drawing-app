@@ -128,11 +128,16 @@ if uploaded_file is not None and model is not None:
                 img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
                 
                 prompt_content = [system_prompt, img]
-                
-                response = model.generate_content(
-                    prompt_content,
-                    generation_config=genai.GenerationConfig(response_mime_type="application/json")
-                )
+
+response = model.generate_content(
+    prompt_content,
+    generation_config=genai.GenerationConfig(
+        response_mime_type="application/json",
+        temperature=0.0,  # ล็อกความสุ่ม ให้ AI คิดแบบเป็นเหตุเป็นผลและตอบเหมือนเดิมทุกครั้ง
+        top_k=1,  # เลือกคำตอบที่มีความน่าจะเป็นสูงสุดตัวเดียว
+        top_p=0.1,
+    ),
+)
                 
                 result_json = clean_json_response(response.text)
                 
