@@ -4,6 +4,9 @@ from PIL import Image
 import io
 import json
 import gc
+import fitz  # PyMuPDF
+from PIL import Image
+import streamlit as st
 import google.generativeai as genai
 
 st.set_page_config(page_title="Hydraulic & Civil Review Pro", layout="wide")
@@ -17,12 +20,12 @@ except Exception as e:
     model = None
     st.error(f"❌ เกิดข้อผิดพลาดในการเชื่อมต่อ: {e}")
 
-# 1. System Prompt: บังคับให้ส่งทั้ง Keyword และ พิกัด Box_2d เผื่อไว้ใช้สำรอง
+# 1. System Prompt
 system_prompt = """
 คุณคือวิศวกรชลประทาน วิศวกรโยธา และผู้พิสูจน์อักษรระดับเชี่ยวชาญ
 ตรวจสอบรูปภาพแบบแปลนหรือรายการคำนวณที่แนบมานี้อย่างละเอียดที่สุด:
 
-1. วิศวกรรม (Engineering): ตรวจสอบความถูกต้องทางด้านวิศวกรรมชลประทาน และวิศวกรรมชโยธา เช่น แรงดันน้ำ (Uplift), Factor of Safety, ความหนาคอนกรีต, ระดับ Elevation, มิติอาคาร , ความกว้าง ยาว สูง 
+1. วิศวกรรม (Engineering): ตรวจสอบความถูกต้องทางด้านวิศวกรรมชลประทาน และวิศวกรรมโยธา เช่น แรงดันน้ำ (Uplift), Factor of Safety, ความหนาคอนกรีต, ระดับ Elevation, มิติอาคาร, ความกว้าง ยาว สูง 
 2. คำผิด (Typo): สแกนหาคำผิดทุกตัวอักษร ทั้งภาษาไทยและศัพท์เทคนิคภาษาอังกฤษ
 3. ข้อสังเกต (Observation): หากไม่พบจุดผิดเลย ให้เสนอแนะจุดที่ควรระวังในการก่อสร้าง
 
@@ -68,22 +71,20 @@ def draw_and_annotate_on_pdf(page, issues):
         
         # วิธีที่ 1: ค้นหาข้อความตรงๆ ใน PDF
         if keyword:
-    # เพิ่ม flags = fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_PRESERVE_LIGATURES เพื่อช่วยหาฟอนต์ที่เว้นวรรคแปลกๆ
-    text_instances = page.search_for(keyword, quads=True) 
-    if text_instances:
-        found_coordinates = True
-        for quad in text_instances:
-            # ใช้ quad (สี่เหลี่ยมด้านขนาน) ช่วยให้วงกรอบข้อความที่เอียงหรือหมุนในแบบแปลนได้แม่นยำขึ้น
-            rect = quad.rect
-            rect_expanded = fitz.Rect(rect.x0 - 5, rect.y0 - 5, rect.x1 + 5, rect.y1 + 5)
-            page.draw_oval(rect_expanded, color=(1, 0, 0), width=2)
-            
-            annot = page.add_text_annot(rect_expanded.top_right, annot_text)
-            annot.set_colors(stroke=(1, 0, 0) if i_type.lower() == "typo" else (1, 0.5, 0))
-            annot.set_info(content=annot_text, title=f"ข้อผิดพลาด ({i_type})")
-            annot.update()
+            text_instances = page.search_for(keyword, quads=True) 
+            if text_instances:
+                found_coordinates = True
+                for quad in text_instances:
+                    rect = quad.rect
+                    rect_expanded = fitz.Rect(rect.x0 - 5, rect.y0 - 5, rect.x1 + 5, rect.y1 + 5)
+                    page.draw_oval(rect_expanded, color=(1, 0, 0), width=2)
+                    
+                    annot = page.add_text_annot(rect_expanded.top_right, annot_text)
+                    annot.set_colors(stroke=(1, 0, 0) if i_type.lower() == "typo" else (1, 0.5, 0))
+                    annot.set_info(content=annot_text, title=f"ข้อผิดพลาด ({i_type})")
+                    annot.update()
         
-        # วิธีที่ 2 (Fallback): ถ้าหาข้อความไม่เจอ (เช่น เป็นเส้น AutoCAD) ให้ใช้พิกัดจาก AI
+        # วิธีที่ 2 (Fallback): ถ้าหาข้อความไม่เจอ ให้ใช้พิกัดจาก AI
         if not found_coordinates and box and len(box) == 4 and box != [0, 0, 0, 0]:
             ymin, xmin, ymax, xmax = box
             x0 = (xmin / 1000.0) * rect_width
@@ -91,7 +92,6 @@ def draw_and_annotate_on_pdf(page, issues):
             x1 = (xmax / 1000.0) * rect_width
             y1 = (ymax / 1000.0) * rect_height
             
-            # วาดวงรีครอบพิกัดที่ AI กะระยะมาให้
             rect = fitz.Rect(x0, y0, x1, y1)
             page.draw_oval(rect, color=(1, 0, 0), width=2)
             
@@ -101,10 +101,10 @@ def draw_and_annotate_on_pdf(page, issues):
             annot.update()
             found_coordinates = True
         
-        # วิธีที่ 3: ถ้าหาจุดชี้เป้าไม่ได้จริงๆ ให้แปะ Note ไว้มุมขวาบน
+        # วิธีที่ 3: แปะ Note ไว้มุมขวาบนกรณีหาพิกัดไม่ได้
         if not found_coordinates:
             annot = page.add_text_annot(fitz.Point(rect_width - 50, 50), annot_text)
-            annot.set_colors(stroke=(0, 0, 1)) # สีน้ำเงิน
+            annot.set_colors(stroke=(0, 0, 1))
             annot.set_info(content=annot_text, title="ข้อสังเกต / ภาพรวม")
             annot.update()
 
@@ -116,8 +116,6 @@ if uploaded_file is not None and model is not None:
         
         try:
             doc = fitz.open(stream=uploaded_file.getvalue(), filetype="pdf")
-            
-            # ปรับ DPI 150 ให้ AI เห็นตัวอักษรเล็กๆ ชัดเจนขึ้น
             current_dpi = 150 
             
             for page_num in range(len(doc)):
@@ -128,23 +126,22 @@ if uploaded_file is not None and model is not None:
                 img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
                 
                 prompt_content = [system_prompt, img]
-
-response = model.generate_content(
-    prompt_content,
-    generation_config=genai.GenerationConfig(
-        response_mime_type="application/json",
-        temperature=0.0,  # ล็อกความสุ่ม ให้ AI คิดแบบเป็นเหตุเป็นผลและตอบเหมือนเดิมทุกครั้ง
-        top_k=1,  # เลือกคำตอบที่มีความน่าจะเป็นสูงสุดตัวเดียว
-        top_p=0.1,
-    ),
-)
+                
+                response = model.generate_content(
+                    prompt_content,
+                    generation_config=genai.GenerationConfig(
+                        response_mime_type="application/json",
+                        temperature=0.0,
+                        top_k=1,
+                        top_p=0.1,
+                    ),
+                )
                 
                 result_json = clean_json_response(response.text)
                 
                 if result_json:
                     st.markdown(f"### 📄 หน้า {page_num + 1}: {result_json.get('project_type', 'ไม่ระบุ')}")
                     
-                    # เรียกฟังก์ชันวาดวงกลมสีแดง
                     draw_and_annotate_on_pdf(page, result_json.get("issues", []))
                     
                     pix_annotated = page.get_pixmap(dpi=100)
