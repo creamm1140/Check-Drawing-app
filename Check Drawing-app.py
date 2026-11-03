@@ -26,20 +26,32 @@ def init_genai():
 api_ready = init_genai()
 
 def get_dynamic_available_models():
-    """ดึงรายชื่อโมเดลที่เปิดใช้งานได้จริงจาก API ในขณะนั้นโดยไม่ฮาร์ดโค้ดชื่อ ป้องกัน Error 404"""
+    """ดึงรายชื่อโมเดลที่รองรับรูปภาพ (Vision) และกรองโมเดล TTS/Audio ออกทั้งหมด"""
     try:
-        models = []
+        valid_models = []
+        invalid_keywords = ['tts', 'audio', 'embed', 'imagen', 'realtime']
+        
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods:
                 name = m.name.replace('models/', '')
-                models.append(name)
+                # กรองเอาเฉพาะโมเดลที่รับรูปภาพได้ (ไม่เอา TTS/Audio/Embed)
+                if not any(k in name.lower() for k in invalid_keywords):
+                    valid_models.append(name)
         
-        # จัดลำดับให้ใช้โมเดลกลุ่ม Flash ก่อน (โควต้ารายวันสูง 1,500 RPD)
-        flash_models = [m for m in models if 'flash' in m.lower()]
-        other_models = [m for m in models if 'flash' not in m.lower()]
+        # จัดลำดับโมเดล Vision ที่เสถียรและโวัตต้าสูงที่สุดขึ้นก่อน
+        preferred_order = [
+            'gemini-1.5-flash',
+            'gemini-1.5-flash-8b',
+            'gemini-1.5-pro',
+            'gemini-3.8-flash'
+        ]
         
-        all_models = flash_models + other_models
-        return all_models if all_models else ['gemini-1.5-flash']
+        ordered_models = [m for m in preferred_order if m in valid_models]
+        for m in valid_models:
+            if m not in ordered_models:
+                ordered_models.append(m)
+                
+        return ordered_models if ordered_models else ['gemini-1.5-flash']
     except Exception:
         return ['gemini-1.5-flash']
 
@@ -86,7 +98,7 @@ def clean_json_response(text):
         return None
 
 def generate_with_auto_fallback(prompt_content):
-    """สลับใช้โมเดลจากรายการที่สแกนเจอจริงใน API เมื่อเจอ Error 404 หรือ 429"""
+    """สลับใช้โมเดล Vision ที่สแกนเจอจริงใน API เมื่อเจอ Error 404 หรือ 429"""
     available_models = get_dynamic_available_models()
     last_error = None
     
@@ -106,11 +118,11 @@ def generate_with_auto_fallback(prompt_content):
         except Exception as e:
             err_str = str(e)
             last_error = err_str
-            if "429" in err_str or "Quota" in err_str or "404" in err_str or "not found" in err_str:
+            if "429" in err_str or "Quota" in err_str or "404" in err_str or "400" in err_str or "not found" in err_str:
                 continue
             else:
                 raise e
-    raise Exception(f"ไม่สามารถประมวลผลได้ในขณะนี้ (โควต้าเต็มหรือโมเดลขัดข้อง): {last_error}")
+    raise Exception(f"ไม่สามารถประมวลผลได้ในขณะนี้: {last_error}")
 
 def draw_spatial_guided_annotation(page, issues):
     """ระบบวาดวงกลมแบบ Spatial Filtering จำกัดพื้นที่ค้นหาป้องกันการวงผิดตำแหน่ง"""
