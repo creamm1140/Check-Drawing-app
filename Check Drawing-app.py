@@ -7,8 +7,12 @@ from PIL import Image
 import streamlit as st
 import google.generativeai as genai
 
-st.set_page_config(page_title="Hydraulic & Civil Review Pro", layout="wide")
-st.title("ระบบผู้ช่วยตรวจแบบ: วิศวกรรมชลประทาน วิศวกรรมโยธา (Ai Pro)")
+st.set_page_config(page_title="ระบบผู้ช่วยตรวจแบบวิศวกรรม (AI Pro)", layout="wide")
+st.title("ระบบผู้ช่วยตรวจแบบ: วิศวกรรมชลประทาน วิศวกรรมโยธา (Ai)")
+
+# ตั้งค่าการเก็บ Cache ผลลัพธ์ใน Session State เพื่อประหยัดโควต้า API
+if "review_results" not in st.session_state:
+    st.session_state.review_results = {}
 
 @st.cache_resource
 def init_genai():
@@ -22,30 +26,25 @@ def init_genai():
 
 api_ready = init_genai()
 
-def get_active_candidate_models():
-    """สแกนหารายชื่อโมเดลที่เปิดใช้งานอยู่จริงในระบบ ป้องกัน Error 404 จากโมเดลที่ยกเลิกบริการ"""
+def get_active_model_name():
+    """ดึงชื่อโมเดลฟรีที่พร้อมใช้งานจริงในระบบ"""
     preferred_models = [
-        'gemini-3.8-flash',
-        'gemini-1.5-pro-latest',
         'gemini-1.5-flash',
+        'gemini-1.5-pro-latest',
         'gemini-1.5-pro'
     ]
     try:
-        # ดึงรายชื่อโมเดลที่ยังให้บริการอยู่ในปัจจุบัน
-        available_models = [
+        available = [
             m.name.replace('models/', '') 
             for m in genai.list_models() 
             if 'generateContent' in m.supported_generation_methods
         ]
-        
-        # คัดกรองเอาเฉพาะโมเดลที่เปิดใช้งานอยู่จริง
-        active_candidates = [m for m in preferred_models if m in available_models]
-        if not active_candidates and available_models:
-            active_candidates = available_models
-            
-        return active_candidates
+        for m in preferred_models:
+            if m in available:
+                return m
+        return available[0] if available else 'gemini-1.5-flash'
     except Exception:
-        return preferred_models
+        return 'gemini-1.5-flash'
 
 system_prompt = """
 คุณคือวิศวกรชลประทาน วิศวกรโยธา และผู้ตรวจทานแบบแปลนมืออาชีพ
@@ -89,33 +88,8 @@ def clean_json_response(text):
     except json.JSONDecodeError:
         return None
 
-def generate_with_fallback(prompt_content):
-    """ฟังก์ชันสลับโมเดลอัตโนมัติเฉพาะโมเดลที่ใช้งานได้จริงเมื่อเจอ 429 Quota Exceeded"""
-    candidates = get_active_candidate_models()
-    
-    for model_name in candidates:
-        try:
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(
-                prompt_content,
-                generation_config=genai.GenerationConfig(
-                    response_mime_type="application/json",
-                    temperature=0.0,
-                    top_k=1,
-                    top_p=0.1,
-                ),
-            )
-            return response.text, model_name
-        except Exception as e:
-            err_msg = str(e)
-            # หากติด Quota (429) หรือ Error 404 ให้สลับไปโมเดลถัดไป
-            if "429" in err_msg or "Quota" in err_msg or "404" in err_msg:
-                continue
-            else:
-                raise e
-    raise Exception("โควต้า API เต็มทุกโมเดลชั่วคราว กรุณาเปิดใช้งาน Billing ใน Google AI Studio หรือรอประมวลผลใหม่ในภายหลัง")
-
 def draw_spatial_guided_annotation(page, issues):
+    """ระบบวาดวงกลมแบบ Spatial Filtering จำกัดพื้นที่ค้นหาป้องกันการวงผิดตำแหน่ง"""
     rect_width = page.rect.width
     rect_height = page.rect.height
     
@@ -164,73 +138,113 @@ def draw_spatial_guided_annotation(page, issues):
             annot.set_info(content=annot_text, title="ข้อสังเกตภาพรวม")
             annot.update()
 
-uploaded_file = st.file_uploader("เลือกไฟล์แบบแปลน (PDF)", type=["pdf"])
+uploaded_file = st.file_uploader("อัปโหลดไฟล์แบบแปลน (PDF)", type=["pdf"])
 
 if uploaded_file is not None and api_ready:
+    doc = fitz.open(stream=uploaded_file.getvalue(), filetype="pdf")
+    total_pages = len(doc)
+    
+    st.sidebar.header("⚙️ การตั้งค่าประหยัดโควต้า (Free Tier)")
+    
+    # ตัวเลือกกำหนดหน้าที่จะตรวจ เพื่อไม่ให้เปลือง Request
+    mode = st.sidebar.radio("รูปแบบการตรวจ:", ["เลือกเฉพาะบางหน้า (แนะนำสำหรับ Demo)", "ตรวจทุกหน้า"])
+    
+    pages_to_process = []
+    if mode == "เลือกเฉพาะบางหน้า (แนะนำสำหรับ Demo)":
+        selected_pages = st.sidebar.multiselect(
+            "เลือกหน้าที่ต้องการตรวจ:", 
+            options=list(range(1, total_pages + 1)),
+            default=[1, 4, 5] if total_pages >= 5 else [1]
+        )
+        pages_to_process = [p - 1 for p in selected_pages]
+    else:
+        pages_to_process = list(range(total_pages))
+        
+    model_name = get_active_model_name()
+    st.sidebar.info(f"🤖 โมเดลที่ใช้: {model_name}")
+
     if st.button("🚀 เริ่มการวิเคราะห์แบบแปลน"):
         status_text = st.empty()
+        model = genai.GenerativeModel(model_name)
+        current_dpi = 200  # ปรับความคมชัดสูงสุดเพื่อให้ AI อ่านสระและมิติตัวเลขได้ชัดเจน
         
-        try:
-            doc = fitz.open(stream=uploaded_file.getvalue(), filetype="pdf")
-            current_dpi = 180
+        for idx, page_num in enumerate(pages_to_process):
+            page_key = f"{uploaded_file.name}_page_{page_num}"
             
-            for page_num in range(len(doc)):
-                status_text.info(f"⏳ กำลังประมวลผลหน้า {page_num + 1} จาก {len(doc)}...")
+            # เช็ก Cache ถ้าเคยตรวจแล้วจะไม่เรียก API ซ้ำ
+            if page_key not in st.session_state.review_results:
+                status_text.info(f"⏳ กำลังส่ง AI วิเคราะห์หน้า {page_num + 1} จากทั้งหมด {total_pages} หน้า...")
                 
                 page = doc.load_page(page_num)
                 pix = page.get_pixmap(dpi=current_dpi)
                 img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
                 
-                prompt_content = [system_prompt, img]
-                
-                resp_text, used_model = generate_with_fallback(prompt_content)
-                result_json = clean_json_response(resp_text)
-                
-                if result_json:
-                    dwg_no = result_json.get('drawing_number', 'ไม่ระบุ')
-                    sheet_no = result_json.get('sheet_number', f'แผ่นที่ {page_num + 1}')
-                    title = result_json.get('project_type', 'แบบแปลนวิศวกรรม')
-                    
-                    st.markdown(f"### 📄 [{dwg_no}] {sheet_no} : {title} *(ประมวลผลด้วยโมเดล: {used_model})*")
-                    
-                    draw_spatial_guided_annotation(page, result_json.get("issues", []))
-                    
-                    pix_annotated = page.get_pixmap(dpi=120)
-                    img_annotated = Image.open(io.BytesIO(pix_annotated.tobytes("png")))
-                    st.image(img_annotated, use_column_width=True)
-                    
-                    issues_this_page = result_json.get("issues", [])
-                    if issues_this_page:
-                        with st.expander(f"📝 รายการข้อผิดพลาดที่พบ ({dwg_no} - {sheet_no})", expanded=True):
-                            for issue in issues_this_page:
-                                i_type = issue.get("type", "Observation")
-                                kw = issue.get("error_keyword", "")
-                                desc = issue.get("description", "")
-                                
-                                if i_type.lower() == "typo":
-                                    st.error(f"🔤 **[คำผิด: '{kw}']:** {desc}")
-                                elif i_type.lower() == "engineering":
-                                    st.warning(f"📐 **[วิศวกรรม: '{kw}']:** {desc}")
-                                else:
-                                    st.info(f"💡 **[ข้อสังเกต]:** {desc}")
-                    
-                    st.markdown("---")
-                
-                del pix
-                del img
-                gc.collect()
-                time.sleep(1)
+                try:
+                    response = model.generate_content(
+                        [system_prompt, img],
+                        generation_config=genai.GenerationConfig(
+                            response_mime_type="application/json",
+                            temperature=0.0,
+                            top_k=1,
+                            top_p=0.1,
+                        ),
+                    )
+                    st.session_state.review_results[page_key] = clean_json_response(response.text)
+                    del pix
+                    del img
+                    gc.collect()
+                    time.sleep(4)  # ชะลอ 4 วินาทีเพื่อป้องกันติด Rate Limit ต่อนาที
+                except Exception as e:
+                    st.error(f"❌ หน้า {page_num + 1} ติดปัญหา API: {e}")
+                    break
+        
+        status_text.success("✅ ประมวลผลเสร็จสิ้น!")
 
-            out_pdf_bytes = io.BytesIO()
-            doc.save(out_pdf_bytes)
-            status_text.success("✅ ตรวจสอบเสร็จสมบูรณ์!")
+    # การแสดงผลลัพธ์
+    if st.session_state.review_results:
+        st.markdown("## 📊 ผลการตรวจสอบแบบแปลน")
+        out_pdf = fitz.open(stream=uploaded_file.getvalue(), filetype="pdf")
+        
+        for page_num in pages_to_process:
+            page_key = f"{uploaded_file.name}_page_{page_num}"
+            result_json = st.session_state.review_results.get(page_key)
             
-            st.download_button(
-                label="📥 ดาวน์โหลดไฟล์ PDF (พร้อมวงกลมระบุจุดผิดและเลขแบบ)",
-                data=out_pdf_bytes.getvalue(),
-                file_name="Reviewed_Engineering_Drawing_Indexed.pdf",
-                mime="application/pdf"
-            )
+            if result_json:
+                dwg_no = result_json.get('drawing_number', 'ไม่ระบุ')
+                sheet_no = result_json.get('sheet_number', f'แผ่นที่ {page_num + 1}')
+                title = result_json.get('project_type', 'แบบแปลนวิศวกรรม')
                 
-        except Exception as e:
-            status_text.error(f"❌ เกิดข้อผิดพลาด: {e}")
+                st.markdown(f"### 📄 [{dwg_no}] {sheet_no} : {title}")
+                
+                page = out_pdf.load_page(page_num)
+                draw_spatial_guided_annotation(page, result_json.get("issues", []))
+                
+                pix_annotated = page.get_pixmap(dpi=120)
+                img_annotated = Image.open(io.BytesIO(pix_annotated.tobytes("png")))
+                st.image(img_annotated, use_column_width=True)
+                
+                issues_this_page = result_json.get("issues", [])
+                if issues_this_page:
+                    with st.expander(f"📝 รายการข้อผิดพลาดที่พบ ({dwg_no} - {sheet_no})", expanded=True):
+                        for issue in issues_this_page:
+                            i_type = issue.get("type", "Observation")
+                            kw = issue.get("error_keyword", "")
+                            desc = issue.get("description", "")
+                            
+                            if i_type.lower() == "typo":
+                                st.error(f"🔤 **[คำผิด: '{kw}']:** {desc}")
+                            elif i_type.lower() == "engineering":
+                                st.warning(f"📐 **[วิศวกรรม: '{kw}']:** {desc}")
+                            else:
+                                st.info(f"💡 **[ข้อสังเกต]:** {desc}")
+                st.markdown("---")
+        
+        out_pdf_bytes = io.BytesIO()
+        out_pdf.save(out_pdf_bytes)
+        
+        st.download_button(
+            label="📥 ดาวน์โหลดไฟล์ PDF (พร้อมวงกลมแดงและเลขแบบ)",
+            data=out_pdf_bytes.getvalue(),
+            file_name="Reviewed_Engineering_Drawing_Demo.pdf",
+            mime="application/pdf"
+        )
