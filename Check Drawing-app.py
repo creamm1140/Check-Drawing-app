@@ -25,11 +25,10 @@ def init_genai():
 
 api_ready = init_genai()
 
-# รายชื่อโมเดลฟรี เรียงลำดับจากโมเดลที่มีโควต้ารายวันสูงสุด (gemini-1.5-flash มี 1,500 RPD)
+# ระบุเฉพาะชื่อโมเดลมาตรฐานที่รองรับแน่นอนใน API (เรียงจากโควต้ารายวันสูงสุด: 1.5-flash มี 1,500 RPD)
 FREE_TIER_MODELS = [
     'gemini-1.5-flash',
-    'gemini-3.8-flash',
-    'gemini-1.5-pro-latest'
+    'gemini-1.5-pro'
 ]
 
 system_prompt = """
@@ -75,7 +74,7 @@ def clean_json_response(text):
         return None
 
 def generate_with_auto_fallback(prompt_content):
-    """ฟังก์ชันสลับโมเดลอัตโนมัติเมื่อโมเดลปัจจุบันติด Quota 429"""
+    """สลับโมเดลอัตโนมัติ และข้ามโมเดลที่ติด Error 404 หรือ 429"""
     last_error = None
     for model_name in FREE_TIER_MODELS:
         try:
@@ -92,12 +91,13 @@ def generate_with_auto_fallback(prompt_content):
             return response.text, model_name
         except Exception as e:
             err_str = str(e)
-            if "429" in err_str or "Quota" in err_str or "404" in err_str:
-                last_error = e
+            last_error = err_str
+            # หากติด Quota (429) หรือหาโมเดลไม่พบ (404) ให้ข้ามไปลองโมเดลถัดไป
+            if "429" in err_str or "Quota" in err_str or "404" in err_str or "not found" in err_str:
                 continue
             else:
                 raise e
-    raise Exception(f"โควต้าหมดชั่วคราวทุกโมเดลสำหรับวันนี้: {last_error}")
+    raise Exception(f"ไม่สามารถประมวลผลได้ในขณะนี้: {last_error}")
 
 def draw_spatial_guided_annotation(page, issues):
     """ระบบวาดวงกลมแบบ Spatial Filtering จำกัดพื้นที่ค้นหาป้องกันการวงผิดตำแหน่ง"""
@@ -178,7 +178,7 @@ if uploaded_file is not None and api_ready:
             page_key = f"{uploaded_file.name}_page_{page_num}"
             
             if page_key not in st.session_state.review_results:
-                status_text.info(f"⏳ กำลังส่ง AI วิเคราะห์หน้า {page_num + 1} จากทั้งหมด {total_pages} หน้า...")
+                status_text.info(f"⏳ กำลังส่ง AI วิเคราะห์หน้า {page_num + 1} จากทั้งหมด {total_pages} หน้า (กำลังรอระบบหน่วงเวลา 10 วินาทีเพื่อป้องกัน Rate Limit)...")
                 
                 page = doc.load_page(page_num)
                 pix = page.get_pixmap(dpi=current_dpi)
@@ -194,7 +194,9 @@ if uploaded_file is not None and api_ready:
                     del pix
                     del img
                     gc.collect()
-                    time.sleep(2)
+                    
+                    # หน่วงเวลา 10 วินาทีตามที่เสนอเพื่อป้องกันการส่งคำขอถี่เกินไป (RPM Safe Range)
+                    time.sleep(10)
                 except Exception as e:
                     st.error(f"❌ หน้า {page_num + 1} เกิดข้อผิดพลาด: {e}")
                     break
