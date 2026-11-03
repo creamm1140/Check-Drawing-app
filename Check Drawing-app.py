@@ -10,14 +10,6 @@ import google.generativeai as genai
 st.set_page_config(page_title="Hydraulic & Civil Review Pro", layout="wide")
 st.title("ระบบผู้ช่วยตรวจแบบ: วิศวกรรมชลประทาน วิศวกรรมโยธา (Ai Pro)")
 
-# รายชื่อโมเดลเรียงตามลำดับที่จะใช้สลับเมื่อติด Quota
-CANDIDATE_MODELS = [
-    'gemini-3.8-flash',
-    'gemini-2.0-flash',
-    'gemini-1.5-flash',
-    'gemini-1.5-pro-latest'
-]
-
 @st.cache_resource
 def init_genai():
     try:
@@ -29,6 +21,31 @@ def init_genai():
         return False
 
 api_ready = init_genai()
+
+def get_active_candidate_models():
+    """สแกนหารายชื่อโมเดลที่เปิดใช้งานอยู่จริงในระบบ ป้องกัน Error 404 จากโมเดลที่ยกเลิกบริการ"""
+    preferred_models = [
+        'gemini-3.8-flash',
+        'gemini-1.5-pro-latest',
+        'gemini-1.5-flash',
+        'gemini-1.5-pro'
+    ]
+    try:
+        # ดึงรายชื่อโมเดลที่ยังให้บริการอยู่ในปัจจุบัน
+        available_models = [
+            m.name.replace('models/', '') 
+            for m in genai.list_models() 
+            if 'generateContent' in m.supported_generation_methods
+        ]
+        
+        # คัดกรองเอาเฉพาะโมเดลที่เปิดใช้งานอยู่จริง
+        active_candidates = [m for m in preferred_models if m in available_models]
+        if not active_candidates and available_models:
+            active_candidates = available_models
+            
+        return active_candidates
+    except Exception:
+        return preferred_models
 
 system_prompt = """
 คุณคือวิศวกรชลประทาน วิศวกรโยธา และผู้ตรวจทานแบบแปลนมืออาชีพ
@@ -73,8 +90,10 @@ def clean_json_response(text):
         return None
 
 def generate_with_fallback(prompt_content):
-    """ฟังก์ชันเรียกใช้ AI โดยจะสลับโมเดลใหม่อัตโนมัติหากโมเดลแรกติด Quota Exceeded (429)"""
-    for model_name in CANDIDATE_MODELS:
+    """ฟังก์ชันสลับโมเดลอัตโนมัติเฉพาะโมเดลที่ใช้งานได้จริงเมื่อเจอ 429 Quota Exceeded"""
+    candidates = get_active_candidate_models()
+    
+    for model_name in candidates:
         try:
             model = genai.GenerativeModel(model_name)
             response = model.generate_content(
@@ -89,11 +108,12 @@ def generate_with_fallback(prompt_content):
             return response.text, model_name
         except Exception as e:
             err_msg = str(e)
-            if "429" in err_msg or "Quota" in err_msg:
-                continue # หากโมเดลนี้โควต้าเต็ม ให้ข้ามไปลองโมเดลถัดไป
+            # หากติด Quota (429) หรือ Error 404 ให้สลับไปโมเดลถัดไป
+            if "429" in err_msg or "Quota" in err_msg or "404" in err_msg:
+                continue
             else:
                 raise e
-    raise Exception("โควต้า API เต็มทุกโมเดลชั่วคราว กรุณาผูก Billing ใน Google AI Studio หรือลองใหม่ในภายหลัง")
+    raise Exception("โควต้า API เต็มทุกโมเดลชั่วคราว กรุณาเปิดใช้งาน Billing ใน Google AI Studio หรือรอประมวลผลใหม่ในภายหลัง")
 
 def draw_spatial_guided_annotation(page, issues):
     rect_width = page.rect.width
@@ -163,7 +183,6 @@ if uploaded_file is not None and api_ready:
                 
                 prompt_content = [system_prompt, img]
                 
-                # เรียกประมวลผลผ่านฟังก์ชัน Fallback
                 resp_text, used_model = generate_with_fallback(prompt_content)
                 result_json = clean_json_response(resp_text)
                 
@@ -172,7 +191,7 @@ if uploaded_file is not None and api_ready:
                     sheet_no = result_json.get('sheet_number', f'แผ่นที่ {page_num + 1}')
                     title = result_json.get('project_type', 'แบบแปลนวิศวกรรม')
                     
-                    st.markdown(f"### 📄 [{dwg_no}] {sheet_no} : {title} *(ใช้โมเดล: {used_model})*")
+                    st.markdown(f"### 📄 [{dwg_no}] {sheet_no} : {title} *(ประมวลผลด้วยโมเดล: {used_model})*")
                     
                     draw_spatial_guided_annotation(page, result_json.get("issues", []))
                     
@@ -200,7 +219,7 @@ if uploaded_file is not None and api_ready:
                 del pix
                 del img
                 gc.collect()
-                time.sleep(1) # เว้นจังหวะ 1 วินาทีลดภาระ Rate limit
+                time.sleep(1)
 
             out_pdf_bytes = io.BytesIO()
             doc.save(out_pdf_bytes)
