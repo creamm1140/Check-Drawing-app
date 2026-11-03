@@ -9,31 +9,65 @@ import google.generativeai as genai
 st.set_page_config(page_title="Hydraulic & Civil Review Pro", layout="wide")
 st.title("ระบบผู้ช่วยตรวจแบบ: วิศวกรรมชลประทาน วิศวกรรมโยธา (Ai Pro)")
 
-try:
-    API_KEY = st.secrets["GEMINI_API_KEY"]
-    genai.configure(api_key=API_KEY)
-    # แนะนำใช้รุ่น Pro เพื่อความแม่นยำในการอ่านภาษาไทยและมิติตัวเลขวิศวกรรม
-    model = genai.GenerativeModel('gemini-1.5-pro') 
-except Exception as e:
-    model = None
-    st.error(f"❌ เกิดข้อผิดพลาดในการเชื่อมต่อ: {e}")
+# ระบบเลือกโมเดลอัตโนมัติ ป้องกัน Error 404
+@st.cache_resource
+def init_gemini_model():
+    try:
+        api_key = st.secrets["GEMINI_API_KEY"]
+        genai.configure(api_key=api_key)
+        
+        # รายชื่อโมเดลประสิทธิภาพสูงที่เรียงตามลำดับความต้องการ
+        candidate_models = [
+            'gemini-1.5-pro-latest',
+            'gemini-1.5-pro',
+            'gemini-2.0-flash',
+            'gemini-1.5-flash'
+        ]
+        
+        # ดึงรายชื่อโมเดลที่บัญชีนี้ใช้งานได้จริง
+        available_models = [
+            m.name.replace('models/', '') 
+            for m in genai.list_models() 
+            if 'generateContent' in m.supported_generation_methods
+        ]
+        
+        selected_model_name = None
+        for candidate in candidate_models:
+            if candidate in available_models:
+                selected_model_name = candidate
+                break
+                
+        if not selected_model_name and available_models:
+            selected_model_name = available_models[0]
+            
+        if selected_model_name:
+            st.sidebar.success(f"🤖 ใช้งานโมเดล: {selected_model_name}")
+            return genai.GenerativeModel(selected_model_name)
+        else:
+            st.error("❌ ไม่พบโมเดลที่รองรับในบัญชีนี้")
+            return None
+    except Exception as e:
+        st.error(f"❌ เกิดข้อผิดพลาดในการเชื่อมต่อ API: {e}")
+        return None
 
-# 1. System Prompt ปรับปรุงเพิ่มการดึงเลขที่แบบ และบังคับส่ง Context Keyword
+model = init_gemini_model()
+
+# 1. System Prompt บังคับสกัดเลขที่แบบจาก Title Block และขอพิกัดบริบท
 system_prompt = """
 คุณคือวิศวกรชลประทาน วิศวกรโยธา และผู้ตรวจทานแบบแปลนมืออาชีพ
-ตรวจสอบแบบแปลนวิศวกรรมที่แนบมานี้อย่างละเอียด:
+ตรวจสอบแบบแปลนวิศวกรรมที่แนบมานี้อย่างละเอียดที่สุด:
 
-1. ดึงข้อมูลตารางชื่อแบบ (Title Block) มุมขวาล่าง:
+1. ดึงข้อมูลตารางชื่อแบบ (Title Block) บริเวณมุมขวาล่างของแบบแปลน:
    - หมายเลขแบบ (เช่น สชป.14-1-004781)
    - หมายเลขแผ่น (เช่น แผ่นที่ 1/12)
    - ชื่อแบบ/ชื่อโครงการ
 
 2. ตรวจสอบความถูกต้อง 3 ด้าน:
-   - วิศวกรรม (Engineering): แรงดันน้ำ (Uplift), Factor of Safety, ความหนาคอนกรีต, ระดับ Elevation, มิติขนาดอาคาร
+   - วิศวกรรม (Engineering): แรงดันน้ำ (Uplift), Factor of Safety, ความหนาคอนกรีต, ระดับ Elevation, มิติขนาดอาคาร (ความกว้าง/ยาว/สูง)
    - คำผิด (Typo): คำผิดภาษาไทย (สระ/วรรณยุกต์) และศัพท์เทคนิคภาษาอังกฤษ
-   - ข้อสังเกต (Observation): จุดที่ควรระมัดระวังในการก่อสร้าง
+   - ข้อสังเกต (Observation): จุดที่ควรระมัดระวังในการก่อสร้าง หรือข้อแนะนำเชิงเทคนิค
 
-ตอบกลับเป็น JSON เท่านั้น โครงสร้างดังนี้:
+คุณต้องตอบกลับเป็น JSON เท่านั้น โครงสร้างดังนี้:
 {
   "drawing_number": "หมายเลขแบบที่อ่านได้จาก Title Block (หากไม่มีให้ใส่ 'ไม่ระบุ')",
   "sheet_number": "หมายเลขแผ่น (เช่น แผ่นที่ 1/12)",
@@ -42,7 +76,7 @@ system_prompt = """
     {
       "type": "Typo หรือ Engineering หรือ Observation",
       "error_keyword": "เฉพาะคำผิดหรือตัวเลขเป๊ะๆ 1-3 คำที่ปรากฏบนแบบตรงจุดนั้น",
-      "description": "อธิบายจุดที่ผิด ชี้แจงเหตุผลทางวิศวกรรม และระบุคำที่ถูกต้อง",
+      "description": "อธิบายจุดที่ผิด ชี้แจงเหตุผลทางวิศวกรรม และระบุคำ/ค่าที่ถูกต้อง",
       "box_2d": [ymin, xmin, ymax, xmax]
     }
   ],
@@ -62,7 +96,7 @@ def clean_json_response(text):
         return None
 
 def draw_spatial_guided_annotation(page, issues):
-    """ระบบวาดวงกลมแบบจำกัดพื้นที่ (Spatial Filtering) ป้องกันการวงซ้ำคำตรงจุดอื่น"""
+    """ระบบวาดวงกลมแบบจำกัดพื้นที่ (Spatial Filtering) ป้องกันวงซ้ำคำเดิมตรงจุดอื่น"""
     rect_width = page.rect.width
     rect_height = page.rect.height
     
@@ -75,16 +109,17 @@ def draw_spatial_guided_annotation(page, issues):
         annot_text = f"[{i_type.upper()}]\n{desc}"
         found_match = False
         
-        # คำนวณพิกัดเป้าหมายจาก AI (ขยายขอบเขต Buffer 50px ป้องกัน AI เดาพิกัดคลาดเคลื่อนเล็กน้อย)
         if box and len(box) == 4 and box != [0, 0, 0, 0]:
             ymin, xmin, ymax, xmax = box
-            ai_x0 = (xmin / 1000.0) * rect_width - 20
-            ai_y0 = (ymin / 1000.0) * rect_height - 20
-            ai_x1 = (xmax / 1000.0) * rect_width + 20
-            ai_y1 = (ymax / 1000.0) * rect_height + 20
+            
+            # คำนวณขอบเขตพิกัดเป้าหมายจาก AI (ขยาย Buffer เล็กน้อยป้องกันความคลาดเคลื่อน)
+            ai_x0 = max(0, (xmin / 1000.0) * rect_width - 25)
+            ai_y0 = max(0, (ymin / 1000.0) * rect_height - 25)
+            ai_x1 = min(rect_width, (xmax / 1000.0) * rect_width + 25)
+            ai_y1 = min(rect_height, (ymax / 1000.0) * rect_height + 25)
             ai_region = fitz.Rect(ai_x0, ai_y0, ai_x1, ai_y1)
             
-            # วิธีที่ 1: ค้นหาข้อความเฉพาะภายในพื้นที่ (ai_region) ที่ AI ชี้เท่านั้น!
+            # วิธีที่ 1: ค้นหาข้อความเฉพาะภายในพื้นที่ (ai_region) ที่ AI ชี้เท่านั้น
             if keyword:
                 text_instances = page.search_for(keyword, clip=ai_region, quads=True)
                 if text_instances:
@@ -108,7 +143,7 @@ def draw_spatial_guided_annotation(page, issues):
                 annot.update()
                 found_match = True
         
-        # วิธีที่ 3: ข้อสังเกตภาพรวม
+        # วิธีที่ 3: แปะ Note ไว้มุมขวาบนกรณีเป็นข้อสังเกตภาพรวม
         if not found_match:
             annot = page.add_text_annot(fitz.Point(rect_width - 60, 60), annot_text)
             annot.set_colors(stroke=(0, 0, 1))
@@ -123,8 +158,7 @@ if uploaded_file is not None and model is not None:
         
         try:
             doc = fitz.open(stream=uploaded_file.getvalue(), filetype="pdf")
-            # เพิ่ม DPI เป็น 180 เพื่อเพิ่มความคมชัดในการอ่านภาษาไทยและตัวเลขสเกลเล็ก
-            current_dpi = 180 
+            current_dpi = 180  # ปรับ DPI เป็น 180 เพื่อเพิ่มความคมชัดของสระไทยและตัวเลขสเกล
             
             for page_num in range(len(doc)):
                 status_text.info(f"⏳ กำลังประมวลผลหน้า {page_num + 1} จาก {len(doc)}...")
@@ -154,7 +188,6 @@ if uploaded_file is not None and model is not None:
                     
                     st.markdown(f"### 📄 [{dwg_no}] {sheet_no} : {title}")
                     
-                    # วาดวงกลมชี้จุดผิดแบบ Spatial Guided
                     draw_spatial_guided_annotation(page, result_json.get("issues", []))
                     
                     pix_annotated = page.get_pixmap(dpi=120)
@@ -187,7 +220,7 @@ if uploaded_file is not None and model is not None:
             status_text.success("✅ ตรวจสอบเสร็จสมบูรณ์!")
             
             st.download_button(
-                label="📥 ดาวน์โหลดไฟล์ PDF (พร้อมวงกลมตรงจุดผิดและระบุเลขแบบ)",
+                label="📥 ดาวน์โหลดไฟล์ PDF (พร้อมวงกลมระบุจุดผิดและเลขแบบ)",
                 data=out_pdf_bytes.getvalue(),
                 file_name="Reviewed_Engineering_Drawing_Indexed.pdf",
                 mime="application/pdf"
