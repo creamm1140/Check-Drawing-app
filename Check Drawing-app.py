@@ -10,7 +10,6 @@ import google.generativeai as genai
 st.set_page_config(page_title="ระบบผู้ช่วยตรวจแบบวิศวกรรม (AI Pro)", layout="wide")
 st.title("ระบบผู้ช่วยตรวจแบบ: วิศวกรรมชลประทาน วิศวกรรมโยธา (Ai)")
 
-# ตั้งค่าการเก็บ Cache ผลลัพธ์ใน Session State เพื่อประหยัดโควต้า API
 if "review_results" not in st.session_state:
     st.session_state.review_results = {}
 
@@ -26,37 +25,12 @@ def init_genai():
 
 api_ready = init_genai()
 
-def get_active_model_name():
-    """ดึงชื่อโมเดลที่เปิดใช้งานจริง และกรองโมเดลที่ยกเลิกบริการ (Deprecated) ออกอัตโนมัติ"""
-    preferred_models = [
-        'gemini-3.8-flash',
-        'gemini-1.5-flash',
-        'gemini-1.5-pro-latest',
-        'gemini-1.5-pro'
-    ]
-    
-    # รายชื่อโมเดลที่ Google ยกเลิกบริการแล้ว (ป้องกัน Error 404)
-    deprecated_models = {
-        'gemini-2.5-flash', 
-        'gemini-2.0-flash', 
-        'gemini-2.5-pro'
-    }
-    
-    try:
-        available = [
-            m.name.replace('models/', '') 
-            for m in genai.list_models() 
-            if 'generateContent' in m.supported_generation_methods
-            and m.name.replace('models/', '') not in deprecated_models
-        ]
-        
-        for m in preferred_models:
-            if m in available:
-                return m
-                
-        return available[0] if available else 'gemini-3.8-flash'
-    except Exception:
-        return 'gemini-3.8-flash'
+# รายชื่อโมเดลฟรี เรียงลำดับจากโมเดลที่มีโควต้ารายวันสูงสุด (gemini-1.5-flash มี 1,500 RPD)
+FREE_TIER_MODELS = [
+    'gemini-1.5-flash',
+    'gemini-3.8-flash',
+    'gemini-1.5-pro-latest'
+]
 
 system_prompt = """
 คุณคือวิศวกรชลประทาน วิศวกรโยธา และผู้ตรวจทานแบบแปลนมืออาชีพ
@@ -99,6 +73,31 @@ def clean_json_response(text):
         return json.loads(cleaned)
     except json.JSONDecodeError:
         return None
+
+def generate_with_auto_fallback(prompt_content):
+    """ฟังก์ชันสลับโมเดลอัตโนมัติเมื่อโมเดลปัจจุบันติด Quota 429"""
+    last_error = None
+    for model_name in FREE_TIER_MODELS:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(
+                prompt_content,
+                generation_config=genai.GenerationConfig(
+                    response_mime_type="application/json",
+                    temperature=0.0,
+                    top_k=1,
+                    top_p=0.1,
+                ),
+            )
+            return response.text, model_name
+        except Exception as e:
+            err_str = str(e)
+            if "429" in err_str or "Quota" in err_str or "404" in err_str:
+                last_error = e
+                continue
+            else:
+                raise e
+    raise Exception(f"โควต้าหมดชั่วคราวทุกโมเดลสำหรับวันนี้: {last_error}")
 
 def draw_spatial_guided_annotation(page, issues):
     """ระบบวาดวงกลมแบบ Spatial Filtering จำกัดพื้นที่ค้นหาป้องกันการวงผิดตำแหน่ง"""
@@ -170,14 +169,10 @@ if uploaded_file is not None and api_ready:
         pages_to_process = [p - 1 for p in selected_pages]
     else:
         pages_to_process = list(range(total_pages))
-        
-    model_name = get_active_model_name()
-    st.sidebar.info(f"🤖 โมเดลที่ใช้: {model_name}")
 
     if st.button("🚀 เริ่มการวิเคราะห์แบบแปลน"):
         status_text = st.empty()
-        model = genai.GenerativeModel(model_name)
-        current_dpi = 200
+        current_dpi = 180
         
         for idx, page_num in enumerate(pages_to_process):
             page_key = f"{uploaded_file.name}_page_{page_num}"
@@ -190,22 +185,18 @@ if uploaded_file is not None and api_ready:
                 img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
                 
                 try:
-                    response = model.generate_content(
-                        [system_prompt, img],
-                        generation_config=genai.GenerationConfig(
-                            response_mime_type="application/json",
-                            temperature=0.0,
-                            top_k=1,
-                            top_p=0.1,
-                        ),
-                    )
-                    st.session_state.review_results[page_key] = clean_json_response(response.text)
+                    resp_text, used_model = generate_with_auto_fallback([system_prompt, img])
+                    result = clean_json_response(resp_text)
+                    if result:
+                        result["used_model"] = used_model
+                    st.session_state.review_results[page_key] = result
+                    
                     del pix
                     del img
                     gc.collect()
-                    time.sleep(4)
+                    time.sleep(2)
                 except Exception as e:
-                    st.error(f"❌ หน้า {page_num + 1} ติดปัญหา API: {e}")
+                    st.error(f"❌ หน้า {page_num + 1} เกิดข้อผิดพลาด: {e}")
                     break
         
         status_text.success("✅ ประมวลผลเสร็จสิ้น!")
@@ -222,8 +213,9 @@ if uploaded_file is not None and api_ready:
                 dwg_no = result_json.get('drawing_number', 'ไม่ระบุ')
                 sheet_no = result_json.get('sheet_number', f'แผ่นที่ {page_num + 1}')
                 title = result_json.get('project_type', 'แบบแปลนวิศวกรรม')
+                model_used = result_json.get('used_model', 'gemini-1.5-flash')
                 
-                st.markdown(f"### 📄 [{dwg_no}] {sheet_no} : {title}")
+                st.markdown(f"### 📄 [{dwg_no}] {sheet_no} : {title} *(โมเดล: {model_used})*")
                 
                 page = out_pdf.load_page(page_num)
                 draw_spatial_guided_annotation(page, result_json.get("issues", []))
