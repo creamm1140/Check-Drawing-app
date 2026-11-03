@@ -25,11 +25,23 @@ def init_genai():
 
 api_ready = init_genai()
 
-# ระบุเฉพาะชื่อโมเดลมาตรฐานที่รองรับแน่นอนใน API (เรียงจากโควต้ารายวันสูงสุด: 1.5-flash มี 1,500 RPD)
-FREE_TIER_MODELS = [
-    'gemini-1.5-flash',
-    'gemini-1.5-pro'
-]
+def get_dynamic_available_models():
+    """ดึงรายชื่อโมเดลที่เปิดใช้งานได้จริงจาก API ในขณะนั้นโดยไม่ฮาร์ดโค้ดชื่อ ป้องกัน Error 404"""
+    try:
+        models = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                name = m.name.replace('models/', '')
+                models.append(name)
+        
+        # จัดลำดับให้ใช้โมเดลกลุ่ม Flash ก่อน (โควต้ารายวันสูง 1,500 RPD)
+        flash_models = [m for m in models if 'flash' in m.lower()]
+        other_models = [m for m in models if 'flash' not in m.lower()]
+        
+        all_models = flash_models + other_models
+        return all_models if all_models else ['gemini-1.5-flash']
+    except Exception:
+        return ['gemini-1.5-flash']
 
 system_prompt = """
 คุณคือวิศวกรชลประทาน วิศวกรโยธา และผู้ตรวจทานแบบแปลนมืออาชีพ
@@ -74,9 +86,11 @@ def clean_json_response(text):
         return None
 
 def generate_with_auto_fallback(prompt_content):
-    """สลับโมเดลอัตโนมัติ และข้ามโมเดลที่ติด Error 404 หรือ 429"""
+    """สลับใช้โมเดลจากรายการที่สแกนเจอจริงใน API เมื่อเจอ Error 404 หรือ 429"""
+    available_models = get_dynamic_available_models()
     last_error = None
-    for model_name in FREE_TIER_MODELS:
+    
+    for model_name in available_models:
         try:
             model = genai.GenerativeModel(model_name)
             response = model.generate_content(
@@ -92,12 +106,11 @@ def generate_with_auto_fallback(prompt_content):
         except Exception as e:
             err_str = str(e)
             last_error = err_str
-            # หากติด Quota (429) หรือหาโมเดลไม่พบ (404) ให้ข้ามไปลองโมเดลถัดไป
             if "429" in err_str or "Quota" in err_str or "404" in err_str or "not found" in err_str:
                 continue
             else:
                 raise e
-    raise Exception(f"ไม่สามารถประมวลผลได้ในขณะนี้: {last_error}")
+    raise Exception(f"ไม่สามารถประมวลผลได้ในขณะนี้ (โควต้าเต็มหรือโมเดลขัดข้อง): {last_error}")
 
 def draw_spatial_guided_annotation(page, issues):
     """ระบบวาดวงกลมแบบ Spatial Filtering จำกัดพื้นที่ค้นหาป้องกันการวงผิดตำแหน่ง"""
@@ -178,7 +191,7 @@ if uploaded_file is not None and api_ready:
             page_key = f"{uploaded_file.name}_page_{page_num}"
             
             if page_key not in st.session_state.review_results:
-                status_text.info(f"⏳ กำลังส่ง AI วิเคราะห์หน้า {page_num + 1} จากทั้งหมด {total_pages} หน้า (กำลังรอระบบหน่วงเวลา 10 วินาทีเพื่อป้องกัน Rate Limit)...")
+                status_text.info(f"⏳ กำลังส่ง AI วิเคราะห์หน้า {page_num + 1} จากทั้งหมด {total_pages} หน้า (ระบบหน่วงเวลา 10 วินาทีป้องกัน Rate Limit)...")
                 
                 page = doc.load_page(page_num)
                 pix = page.get_pixmap(dpi=current_dpi)
@@ -195,7 +208,6 @@ if uploaded_file is not None and api_ready:
                     del img
                     gc.collect()
                     
-                    # หน่วงเวลา 10 วินาทีตามที่เสนอเพื่อป้องกันการส่งคำขอถี่เกินไป (RPM Safe Range)
                     time.sleep(10)
                 except Exception as e:
                     st.error(f"❌ หน้า {page_num + 1} เกิดข้อผิดพลาด: {e}")
@@ -215,9 +227,9 @@ if uploaded_file is not None and api_ready:
                 dwg_no = result_json.get('drawing_number', 'ไม่ระบุ')
                 sheet_no = result_json.get('sheet_number', f'แผ่นที่ {page_num + 1}')
                 title = result_json.get('project_type', 'แบบแปลนวิศวกรรม')
-                model_used = result_json.get('used_model', 'gemini-1.5-flash')
+                model_used = result_json.get('used_model', 'ไม่ระบุ')
                 
-                st.markdown(f"### 📄 [{dwg_no}] {sheet_no} : {title} *(โมเดล: {model_used})*")
+                st.markdown(f"### 📄 [{dwg_no}] {sheet_no} : {title} *(โมเดลที่ใช้: {model_used})*")
                 
                 page = out_pdf.load_page(page_num)
                 draw_spatial_guided_annotation(page, result_json.get("issues", []))
