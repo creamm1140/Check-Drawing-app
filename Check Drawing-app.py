@@ -27,24 +27,36 @@ def init_genai():
 api_ready = init_genai()
 
 def get_active_model_name():
-    """ดึงชื่อโมเดลฟรีที่พร้อมใช้งานจริงในระบบ"""
+    """ดึงชื่อโมเดลที่เปิดใช้งานจริง และกรองโมเดลที่ยกเลิกบริการ (Deprecated) ออกอัตโนมัติ"""
     preferred_models = [
+        'gemini-3.8-flash',
         'gemini-1.5-flash',
         'gemini-1.5-pro-latest',
         'gemini-1.5-pro'
     ]
+    
+    # รายชื่อโมเดลที่ Google ยกเลิกบริการแล้ว (ป้องกัน Error 404)
+    deprecated_models = {
+        'gemini-2.5-flash', 
+        'gemini-2.0-flash', 
+        'gemini-2.5-pro'
+    }
+    
     try:
         available = [
             m.name.replace('models/', '') 
             for m in genai.list_models() 
             if 'generateContent' in m.supported_generation_methods
+            and m.name.replace('models/', '') not in deprecated_models
         ]
+        
         for m in preferred_models:
             if m in available:
                 return m
-        return available[0] if available else 'gemini-1.5-flash'
+                
+        return available[0] if available else 'gemini-3.8-flash'
     except Exception:
-        return 'gemini-1.5-flash'
+        return 'gemini-3.8-flash'
 
 system_prompt = """
 คุณคือวิศวกรชลประทาน วิศวกรโยธา และผู้ตรวจทานแบบแปลนมืออาชีพ
@@ -146,7 +158,6 @@ if uploaded_file is not None and api_ready:
     
     st.sidebar.header("⚙️ การตั้งค่าประหยัดโควต้า (Free Tier)")
     
-    # ตัวเลือกกำหนดหน้าที่จะตรวจ เพื่อไม่ให้เปลือง Request
     mode = st.sidebar.radio("รูปแบบการตรวจ:", ["เลือกเฉพาะบางหน้า (แนะนำสำหรับ Demo)", "ตรวจทุกหน้า"])
     
     pages_to_process = []
@@ -166,12 +177,11 @@ if uploaded_file is not None and api_ready:
     if st.button("🚀 เริ่มการวิเคราะห์แบบแปลน"):
         status_text = st.empty()
         model = genai.GenerativeModel(model_name)
-        current_dpi = 200  # ปรับความคมชัดสูงสุดเพื่อให้ AI อ่านสระและมิติตัวเลขได้ชัดเจน
+        current_dpi = 200
         
         for idx, page_num in enumerate(pages_to_process):
             page_key = f"{uploaded_file.name}_page_{page_num}"
             
-            # เช็ก Cache ถ้าเคยตรวจแล้วจะไม่เรียก API ซ้ำ
             if page_key not in st.session_state.review_results:
                 status_text.info(f"⏳ กำลังส่ง AI วิเคราะห์หน้า {page_num + 1} จากทั้งหมด {total_pages} หน้า...")
                 
@@ -193,14 +203,13 @@ if uploaded_file is not None and api_ready:
                     del pix
                     del img
                     gc.collect()
-                    time.sleep(4)  # ชะลอ 4 วินาทีเพื่อป้องกันติด Rate Limit ต่อนาที
+                    time.sleep(4)
                 except Exception as e:
                     st.error(f"❌ หน้า {page_num + 1} ติดปัญหา API: {e}")
                     break
         
         status_text.success("✅ ประมวลผลเสร็จสิ้น!")
 
-    # การแสดงผลลัพธ์
     if st.session_state.review_results:
         st.markdown("## 📊 ผลการตรวจสอบแบบแปลน")
         out_pdf = fitz.open(stream=uploaded_file.getvalue(), filetype="pdf")
