@@ -1,6 +1,7 @@
 import io
 import json
 import gc
+import time
 import fitz  # PyMuPDF
 from PIL import Image
 import streamlit as st
@@ -9,50 +10,26 @@ import google.generativeai as genai
 st.set_page_config(page_title="Hydraulic & Civil Review Pro", layout="wide")
 st.title("ระบบผู้ช่วยตรวจแบบ: วิศวกรรมชลประทาน วิศวกรรมโยธา (Ai Pro)")
 
-# ระบบเลือกโมเดลอัตโนมัติ (อัปเดตใช้ gemini-3.8-flash และโมเดลล่าสุด)
+# รายชื่อโมเดลเรียงตามลำดับที่จะใช้สลับเมื่อติด Quota
+CANDIDATE_MODELS = [
+    'gemini-3.8-flash',
+    'gemini-2.0-flash',
+    'gemini-1.5-flash',
+    'gemini-1.5-pro-latest'
+]
+
 @st.cache_resource
-def init_gemini_model():
+def init_genai():
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
         genai.configure(api_key=api_key)
-        
-        # รายชื่อโมเดลประสิทธิภาพสูงเรียงตามลำดับ
-        candidate_models = [
-            'gemini-3.8-flash',
-            'gemini-1.5-pro-latest',
-            'gemini-2.0-flash',
-            'gemini-1.5-flash'
-        ]
-        
-        # ดึงรายชื่อโมเดลที่บัญชีนี้ใช้งานได้จริง
-        available_models = [
-            m.name.replace('models/', '') 
-            for m in genai.list_models() 
-            if 'generateContent' in m.supported_generation_methods
-        ]
-        
-        selected_model_name = None
-        for candidate in candidate_models:
-            if candidate in available_models:
-                selected_model_name = candidate
-                break
-                
-        if not selected_model_name and available_models:
-            selected_model_name = available_models[0]
-            
-        if selected_model_name:
-            st.sidebar.success(f"🤖 ใช้งานโมเดล: {selected_model_name}")
-            return genai.GenerativeModel(selected_model_name)
-        else:
-            st.error("❌ ไม่พบโมเดลที่รองรับในบัญชีนี้")
-            return None
+        return True
     except Exception as e:
-        st.error(f"❌ เกิดข้อผิดพลาดในการเชื่อมต่อ API: {e}")
-        return None
+        st.error(f"❌ เกิดข้อผิดพลาดในการตั้งค่า API Key: {e}")
+        return False
 
-model = init_gemini_model()
+api_ready = init_genai()
 
-# 1. System Prompt สกัดเลขที่แบบจาก Title Block และขอบเขตพิกัด
 system_prompt = """
 คุณคือวิศวกรชลประทาน วิศวกรโยธา และผู้ตรวจทานแบบแปลนมืออาชีพ
 ตรวจสอบแบบแปลนวิศวกรรมที่แนบมานี้อย่างละเอียดที่สุด:
@@ -95,8 +72,30 @@ def clean_json_response(text):
     except json.JSONDecodeError:
         return None
 
+def generate_with_fallback(prompt_content):
+    """ฟังก์ชันเรียกใช้ AI โดยจะสลับโมเดลใหม่อัตโนมัติหากโมเดลแรกติด Quota Exceeded (429)"""
+    for model_name in CANDIDATE_MODELS:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(
+                prompt_content,
+                generation_config=genai.GenerationConfig(
+                    response_mime_type="application/json",
+                    temperature=0.0,
+                    top_k=1,
+                    top_p=0.1,
+                ),
+            )
+            return response.text, model_name
+        except Exception as e:
+            err_msg = str(e)
+            if "429" in err_msg or "Quota" in err_msg:
+                continue # หากโมเดลนี้โควต้าเต็ม ให้ข้ามไปลองโมเดลถัดไป
+            else:
+                raise e
+    raise Exception("โควต้า API เต็มทุกโมเดลชั่วคราว กรุณาผูก Billing ใน Google AI Studio หรือลองใหม่ในภายหลัง")
+
 def draw_spatial_guided_annotation(page, issues):
-    """ระบบวาดวงกลมแบบจำกัดพื้นที่ (Spatial Filtering) ป้องกันวงซ้ำคำเดิมตรงจุดอื่น"""
     rect_width = page.rect.width
     rect_height = page.rect.height
     
@@ -111,15 +110,12 @@ def draw_spatial_guided_annotation(page, issues):
         
         if box and len(box) == 4 and box != [0, 0, 0, 0]:
             ymin, xmin, ymax, xmax = box
-            
-            # คำนวณขอบเขตพิกัดเป้าหมายจาก AI (ขยาย Buffer เล็กน้อยป้องกันความคลาดเคลื่อน)
             ai_x0 = max(0, (xmin / 1000.0) * rect_width - 25)
             ai_y0 = max(0, (ymin / 1000.0) * rect_height - 25)
             ai_x1 = min(rect_width, (xmax / 1000.0) * rect_width + 25)
             ai_y1 = min(rect_height, (ymax / 1000.0) * rect_height + 25)
             ai_region = fitz.Rect(ai_x0, ai_y0, ai_x1, ai_y1)
             
-            # วิธีที่ 1: ค้นหาข้อความเฉพาะภายในพื้นที่ (ai_region) ที่ AI ชี้เท่านั้น
             if keyword:
                 text_instances = page.search_for(keyword, clip=ai_region, quads=True)
                 if text_instances:
@@ -134,7 +130,6 @@ def draw_spatial_guided_annotation(page, issues):
                         annot.set_info(content=annot_text, title=f"ข้อผิดพลาด ({i_type})")
                         annot.update()
             
-            # วิธีที่ 2 (Fallback Spatial): หากหาข้อความตรงเป๊ะไม่เจอ วาดวงรีล้อมรอบพิกัด AI ตรงจุดนั้น
             if not found_match:
                 page.draw_oval(ai_region, color=(1, 0, 0), width=2)
                 annot = page.add_text_annot(fitz.Point(ai_x1, ai_y0), annot_text)
@@ -143,7 +138,6 @@ def draw_spatial_guided_annotation(page, issues):
                 annot.update()
                 found_match = True
         
-        # วิธีที่ 3: แปะ Note ไว้มุมขวาบนกรณีเป็นข้อสังเกตภาพรวม
         if not found_match:
             annot = page.add_text_annot(fitz.Point(rect_width - 60, 60), annot_text)
             annot.set_colors(stroke=(0, 0, 1))
@@ -152,13 +146,13 @@ def draw_spatial_guided_annotation(page, issues):
 
 uploaded_file = st.file_uploader("เลือกไฟล์แบบแปลน (PDF)", type=["pdf"])
 
-if uploaded_file is not None and model is not None:
+if uploaded_file is not None and api_ready:
     if st.button("🚀 เริ่มการวิเคราะห์แบบแปลน"):
         status_text = st.empty()
         
         try:
             doc = fitz.open(stream=uploaded_file.getvalue(), filetype="pdf")
-            current_dpi = 180  # ปรับ DPI เป็น 180 เพื่อเพิ่มความคมชัดของสระไทยและตัวเลขสเกล
+            current_dpi = 180
             
             for page_num in range(len(doc)):
                 status_text.info(f"⏳ กำลังประมวลผลหน้า {page_num + 1} จาก {len(doc)}...")
@@ -169,24 +163,16 @@ if uploaded_file is not None and model is not None:
                 
                 prompt_content = [system_prompt, img]
                 
-                response = model.generate_content(
-                    prompt_content,
-                    generation_config=genai.GenerationConfig(
-                        response_mime_type="application/json",
-                        temperature=0.0,
-                        top_k=1,
-                        top_p=0.1,
-                    ),
-                )
-                
-                result_json = clean_json_response(response.text)
+                # เรียกประมวลผลผ่านฟังก์ชัน Fallback
+                resp_text, used_model = generate_with_fallback(prompt_content)
+                result_json = clean_json_response(resp_text)
                 
                 if result_json:
                     dwg_no = result_json.get('drawing_number', 'ไม่ระบุ')
                     sheet_no = result_json.get('sheet_number', f'แผ่นที่ {page_num + 1}')
                     title = result_json.get('project_type', 'แบบแปลนวิศวกรรม')
                     
-                    st.markdown(f"### 📄 [{dwg_no}] {sheet_no} : {title}")
+                    st.markdown(f"### 📄 [{dwg_no}] {sheet_no} : {title} *(ใช้โมเดล: {used_model})*")
                     
                     draw_spatial_guided_annotation(page, result_json.get("issues", []))
                     
@@ -214,6 +200,7 @@ if uploaded_file is not None and model is not None:
                 del pix
                 del img
                 gc.collect()
+                time.sleep(1) # เว้นจังหวะ 1 วินาทีลดภาระ Rate limit
 
             out_pdf_bytes = io.BytesIO()
             doc.save(out_pdf_bytes)
