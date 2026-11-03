@@ -9,17 +9,17 @@ import google.generativeai as genai
 st.set_page_config(page_title="Hydraulic & Civil Review Pro", layout="wide")
 st.title("ระบบผู้ช่วยตรวจแบบ: วิศวกรรมชลประทาน วิศวกรรมโยธา (Ai Pro)")
 
-# ระบบเลือกโมเดลอัตโนมัติ ป้องกัน Error 404
+# ระบบเลือกโมเดลอัตโนมัติ (อัปเดตใช้ gemini-3.8-flash และโมเดลล่าสุด)
 @st.cache_resource
 def init_gemini_model():
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
         genai.configure(api_key=api_key)
         
-        # รายชื่อโมเดลประสิทธิภาพสูงที่เรียงตามลำดับความต้องการ
+        # รายชื่อโมเดลประสิทธิภาพสูงเรียงตามลำดับ
         candidate_models = [
+            'gemini-3.8-flash',
             'gemini-1.5-pro-latest',
-            'gemini-1.5-pro',
             'gemini-2.0-flash',
             'gemini-1.5-flash'
         ]
@@ -52,7 +52,7 @@ def init_gemini_model():
 
 model = init_gemini_model()
 
-# 1. System Prompt บังคับสกัดเลขที่แบบจาก Title Block และขอพิกัดบริบท
+# 1. System Prompt สกัดเลขที่แบบจาก Title Block และขอบเขตพิกัด
 system_prompt = """
 คุณคือวิศวกรชลประทาน วิศวกรโยธา และผู้ตรวจทานแบบแปลนมืออาชีพ
 ตรวจสอบแบบแปลนวิศวกรรมที่แนบมานี้อย่างละเอียดที่สุด:
