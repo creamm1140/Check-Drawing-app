@@ -25,8 +25,9 @@ def init_genai():
 
 api_ready = init_genai()
 
-def get_dynamic_available_models():
-    """ดึงรายชื่อโมเดลที่รองรับรูปภาพ (Vision) และกรองโมเดล TTS/Audio ออกทั้งหมด"""
+@st.cache_data(ttl=3600)
+def get_cached_available_models():
+    """ดึงรายชื่อโมเดล Vision ครั้งเดียวและจำไว้ 1 ชั่วโมง ป้องกันปัญหาระบบช้า"""
     try:
         valid_models = []
         invalid_keywords = ['tts', 'audio', 'embed', 'imagen', 'realtime']
@@ -34,11 +35,9 @@ def get_dynamic_available_models():
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods:
                 name = m.name.replace('models/', '')
-                # กรองเอาเฉพาะโมเดลที่รับรูปภาพได้ (ไม่เอา TTS/Audio/Embed)
                 if not any(k in name.lower() for k in invalid_keywords):
                     valid_models.append(name)
         
-        # จัดลำดับโมเดล Vision ที่เสถียรและโวัตต้าสูงที่สุดขึ้นก่อน
         preferred_order = [
             'gemini-1.5-flash',
             'gemini-1.5-flash-8b',
@@ -97,35 +96,42 @@ def clean_json_response(text):
     except json.JSONDecodeError:
         return None
 
-def generate_with_auto_fallback(prompt_content):
-    """สลับใช้โมเดล Vision ที่สแกนเจอจริงใน API เมื่อเจอ Error 404 หรือ 429"""
-    available_models = get_dynamic_available_models()
+def generate_with_auto_fallback(prompt_content, max_retries=2):
+    """สลับโมเดลอัตโนมัติ และมีระบบ Auto-Retry หากเจอ Error 500 จากเซิร์ฟเวอร์ Google"""
+    available_models = get_cached_available_models()
     last_error = None
     
     for model_name in available_models:
-        try:
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(
-                prompt_content,
-                generation_config=genai.GenerationConfig(
-                    response_mime_type="application/json",
-                    temperature=0.0,
-                    top_k=1,
-                    top_p=0.1,
-                ),
-            )
-            return response.text, model_name
-        except Exception as e:
-            err_str = str(e)
-            last_error = err_str
-            if "429" in err_str or "Quota" in err_str or "404" in err_str or "400" in err_str or "not found" in err_str:
-                continue
-            else:
-                raise e
+        for attempt in range(max_retries):
+            try:
+                model = genai.GenerativeModel(model_name)
+                response = model.generate_content(
+                    prompt_content,
+                    generation_config=genai.GenerationConfig(
+                        response_mime_type="application/json",
+                        temperature=0.0,
+                        top_k=1,
+                        top_p=0.1,
+                    ),
+                )
+                return response.text, model_name
+            except Exception as e:
+                err_str = str(e)
+                last_error = err_str
+                
+                # หากเจอ 500 Internal error ให้ลองส่งซ้ำในโมเดลเดิมก่อน
+                if "500" in err_str or "Internal error" in err_str:
+                    time.sleep(2)
+                    continue
+                # หากเป็น Error 429/404/400 ให้หลุดออกข้ามไปใช้โมเดลถัดไป
+                elif any(k in err_str for k in ["429", "Quota", "404", "400", "not found"]):
+                    break
+                else:
+                    raise e
+                    
     raise Exception(f"ไม่สามารถประมวลผลได้ในขณะนี้: {last_error}")
 
 def draw_spatial_guided_annotation(page, issues):
-    """ระบบวาดวงกลมแบบ Spatial Filtering จำกัดพื้นที่ค้นหาป้องกันการวงผิดตำแหน่ง"""
     rect_width = page.rect.width
     rect_height = page.rect.height
     
@@ -197,13 +203,13 @@ if uploaded_file is not None and api_ready:
 
     if st.button("🚀 เริ่มการวิเคราะห์แบบแปลน"):
         status_text = st.empty()
-        current_dpi = 180
+        current_dpi = 150
         
         for idx, page_num in enumerate(pages_to_process):
             page_key = f"{uploaded_file.name}_page_{page_num}"
             
             if page_key not in st.session_state.review_results:
-                status_text.info(f"⏳ กำลังส่ง AI วิเคราะห์หน้า {page_num + 1} จากทั้งหมด {total_pages} หน้า (ระบบหน่วงเวลา 10 วินาทีป้องกัน Rate Limit)...")
+                status_text.info(f"⏳ กำลังส่ง AI วิเคราะห์หน้า {page_num + 1} จากทั้งหมด {total_pages} หน้า...")
                 
                 page = doc.load_page(page_num)
                 pix = page.get_pixmap(dpi=current_dpi)
@@ -220,7 +226,7 @@ if uploaded_file is not None and api_ready:
                     del img
                     gc.collect()
                     
-                    time.sleep(10)
+                    time.sleep(3)
                 except Exception as e:
                     st.error(f"❌ หน้า {page_num + 1} เกิดข้อผิดพลาด: {e}")
                     break
@@ -248,7 +254,8 @@ if uploaded_file is not None and api_ready:
                 
                 pix_annotated = page.get_pixmap(dpi=120)
                 img_annotated = Image.open(io.BytesIO(pix_annotated.tobytes("png")))
-                st.image(img_annotated, use_column_width=True)
+                # ปรับเป็น use_container_width=True ป้องกันปัญหา UI หลุดแคช
+                st.image(img_annotated, use_container_width=True)
                 
                 issues_this_page = result_json.get("issues", [])
                 if issues_this_page:
