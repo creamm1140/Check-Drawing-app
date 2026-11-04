@@ -26,8 +26,38 @@ def init_genai():
 
 api_ready = init_genai()
 
-# โมเดลเวอร์ชันฟรีที่เสถียรที่สุดและมีโควต้า 1,500 ครั้ง/วัน
-FREE_MODEL_NAME = 'gemini-1.5-flash'
+@st.cache_data(ttl=1800)
+def get_valid_vision_models():
+    """สแกนหารายชื่อโมเดล Vision ที่ใช้งานได้จริงในบัญชีนี้แบบ Dynamic เพื่อแก้ปัญหา 404"""
+    invalid_keywords = ['tts', 'audio', 'embed', 'imagen', 'realtime']
+    valid_models = []
+    try:
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                name = m.name.replace('models/', '')
+                if not any(k in name.lower() for k in invalid_keywords):
+                    valid_models.append(name)
+        
+        # จัดลำดับโมเดล Vision ที่เปิดใช้งานจริงในระบบ
+        priority_candidates = [
+            'gemini-1.5-flash-latest',
+            'gemini-1.5-flash',
+            'gemini-1.5-flash-8b',
+            'gemini-2.0-flash',
+            'gemini-2.5-flash',
+            'gemini-3.8-flash',
+            'gemini-1.5-pro-latest',
+            'gemini-1.5-pro'
+        ]
+        
+        ordered = [m for m in priority_candidates if m in valid_models]
+        for m in valid_models:
+            if m not in ordered:
+                ordered.append(m)
+                
+        return ordered if ordered else ['gemini-1.5-flash-latest', 'gemini-1.5-flash']
+    except Exception:
+        return ['gemini-1.5-flash-latest', 'gemini-1.5-flash']
 
 system_prompt = """
 คุณคือวิศวกรชลประทาน วิศวกรโยธา และผู้ตรวจทานแบบแปลนมืออาชีพ
@@ -39,7 +69,7 @@ system_prompt = """
    - ชื่อแบบ/ชื่อโครงการ
 
 2. ตรวจสอบความถูกต้อง 3 ด้านอย่างละเอียด:
-   - วิศวกรรม (Engineering): ตรวจสอบระดับ Elevation, แรงดันน้ำ (Uplift), Factor of Safety, ความหนาคอนกรีต, ขนาดและระยะระยะเหล็กเสริม, สเกลอาคาร, มิติความกว้าง/ยาว/สูง
+   - วิศวกรรม (Engineering): ตรวจสอบระดับ Elevation, แรงดันน้ำ (Uplift), Factor of Safety, ความหนาคอนกรีต, ขนาดและระยะเหล็กเสริม, สเกลอาคาร, มิติความกว้าง/ยาว/สูง
    - คำผิด (Typo): คำผิดภาษาไทย (สระ/วรรณยุกต์ตกหล่น) และศัพท์เทคนิคภาษาอังกฤษ
    - ข้อสังเกต (Observation): จุดที่ควรระมัดระวังในการก่อสร้าง ข้อกำหนดวัสดุ หรือข้อแนะนำเชิงเทคนิค
 
@@ -71,12 +101,14 @@ def clean_json_response(text):
     except json.JSONDecodeError:
         return None
 
-def process_page_with_retry(prompt_content, max_retries=3):
-    """ส่งวิเคราะห์ทีละหน้า พร้อมระบบ Retry 3 รอบเมื่อเจอข้อผิดพลาดจาก Server"""
-    model = genai.GenerativeModel(FREE_MODEL_NAME)
+def process_page_with_dynamic_fallback(prompt_content):
+    """ส่งคำขอไปยังโมเดลที่เปิดใช้งานจริง หากเจอ 404 หรือ 429 จะสลับโมเดลให้อัตโนมัติ"""
+    models_to_try = get_valid_vision_models()
+    last_error = None
     
-    for attempt in range(1, max_retries + 1):
+    for model_name in models_to_try:
         try:
+            model = genai.GenerativeModel(model_name)
             response = model.generate_content(
                 prompt_content,
                 generation_config=genai.GenerationConfig(
@@ -86,20 +118,24 @@ def process_page_with_retry(prompt_content, max_retries=3):
                     top_p=0.1,
                 ),
             )
-            return response.text
+            return response.text, model_name
         except Exception as e:
             err_str = str(e)
-            # หากติด Rate limit 429 ให้รอนานขึ้น
-            if "429" in err_str or "Quota" in err_str:
-                time.sleep(8 * attempt)
-            # หากติด Error 500 หรือ Timeout ให้รอ 3 วินาทีแล้วส่งซ้ำ
+            last_error = f"{model_name}: {err_str}"
+            # หากเจอ 404 (ไม่พบโมเดล), 429 (โควต้าเต็ม) หรือ 400 ให้สลับไปโมเดลถัดไป
+            if any(k in err_str for k in ["404", "429", "400", "Quota", "not found"]):
+                continue
             elif "500" in err_str or "Internal" in err_str:
-                time.sleep(3 * attempt)
+                time.sleep(3)
+                try:
+                    response = model.generate_content(prompt_content)
+                    return response.text, model_name
+                except Exception:
+                    continue
             else:
-                if attempt == max_retries:
-                    raise e
-                time.sleep(2)
-    raise Exception("ไม่สามารถประมวลผลได้หลังจากพยายามซ้ำหลายครั้ง")
+                continue
+                
+    raise Exception(f"ไม่สามารถประมวลผลได้ในขณะนี้: {last_error}")
 
 def draw_spatial_guided_annotation(page, issues):
     rect_width = page.rect.width
@@ -157,7 +193,6 @@ if uploaded_file is not None and api_ready:
     total_pages = len(doc)
     
     st.sidebar.header("⚙️ การตั้งค่าการตรวจ")
-    # ปรับค่าเริ่มต้นเป็น "ตรวจทุกหน้า"
     mode = st.sidebar.radio("รูปแบบการตรวจ:", ["ตรวจทุกหน้า (แนะนำ)", "เลือกเฉพาะบางหน้า"])
     
     pages_to_process = []
@@ -182,7 +217,7 @@ if uploaded_file is not None and api_ready:
     if run_btn:
         progress_bar = st.progress(0)
         status_text = st.empty()
-        current_dpi = 150  # ปรับ DPI เป็น 150 ให้ได้ภาพที่คมชัดพอสำหรับแปลน A1 แต่ประมวลผลเร็ว
+        current_dpi = 150
         
         processed_count = 0
         total_selected = len(pages_to_process)
@@ -190,30 +225,30 @@ if uploaded_file is not None and api_ready:
         for idx, page_num in enumerate(pages_to_process):
             page_key = f"{uploaded_file.name}_page_{page_num}"
             
-            # หากเคยตรวจหน้านี้ไปแล้ว ให้ข้ามไปหน้าถัดไปทันที (ประหยัดโควต้า)
             if page_key in st.session_state.review_results:
                 processed_count += 1
                 progress_bar.progress(processed_count / total_selected)
                 continue
                 
-            status_text.info(f"⏳ กำลังวิเคราะห์แผ่นที่ {page_num + 1} จากทั้งหมด {total_pages} แผ่น (กรุณารอระบบประมวลผลทีละแผ่น)...")
+            status_text.info(f"⏳ กำลังวิเคราะห์แผ่นที่ {page_num + 1} จากทั้งหมด {total_pages} แผ่น (หน่วงเวลา 10 วินาทีเพื่อความเสถียร)...")
             
             page = doc.load_page(page_num)
             pix = page.get_pixmap(dpi=current_dpi)
             img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
             
             try:
-                resp_text = process_page_with_retry([system_prompt, img])
+                resp_text, used_model = process_page_with_dynamic_fallback([system_prompt, img])
                 result = clean_json_response(resp_text)
                 
                 if result:
+                    result["used_model"] = used_model
                     st.session_state.review_results[page_key] = result
                 else:
-                    st.warning(f"⚠️ แผ่นที่ {page_num + 1} ไม่สามารถแปลงผลลัพธ์เป็น JSON ได้ ระบบจะบันทึกข้อความดิบไว้")
                     st.session_state.review_results[page_key] = {
                         "drawing_number": "ไม่ระบุ",
                         "sheet_number": f"แผ่นที่ {page_num + 1}",
                         "project_type": "แบบแปลนวิศวกรรม",
+                        "used_model": used_model,
                         "issues": [{"type": "Observation", "error_keyword": "", "description": resp_text, "box_2d": [0,0,0,0]}]
                     }
                 
@@ -221,12 +256,11 @@ if uploaded_file is not None and api_ready:
                 del img
                 gc.collect()
                 
-                # หน่วงเวลา 4 วินาทีเพื่อให้อยู่ในเกณฑ์ 15 RPM ของ Free Tier
-                time.sleep(4)
+                # หน่วงเวลา 10 วินาทีตามที่เคยใช้งานได้ดี เพื่อป้องกัน Rate Limit
+                time.sleep(10)
                 
             except Exception as e:
-                st.error(f"❌ แผ่นที่ {page_num + 1} เกิดข้อผิดพลาด: {e} (ระบบกำลังข้ามไปตรวจแผ่นถัดไป)")
-                # ใช้ continue เพื่อไม่ให้ขัดจังหวะการตรวจแผ่นที่เหลือ
+                st.error(f"❌ แผ่นที่ {page_num + 1} เกิดข้อผิดพลาด: {e}")
                 continue
             
             processed_count += 1
@@ -234,13 +268,11 @@ if uploaded_file is not None and api_ready:
         
         status_text.success(f"✅ ตรวจสอบเสร็จสิ้นทั้งหมด {len(st.session_state.review_results)} แผ่น!")
 
-    # การแสดงผลลัพธ์ย้อนหลังทั้งหมด
     if st.session_state.review_results:
         st.markdown("---")
         st.markdown("## 📊 ผลการตรวจสอบแบบแปลนทั้งหมด")
         out_pdf = fitz.open(stream=uploaded_file.getvalue(), filetype="pdf")
         
-        # แสดงผลตามลำดับแผ่นที่เลือก
         for page_num in range(total_pages):
             page_key = f"{uploaded_file.name}_page_{page_num}"
             result_json = st.session_state.review_results.get(page_key)
@@ -249,8 +281,9 @@ if uploaded_file is not None and api_ready:
                 dwg_no = result_json.get('drawing_number', 'ไม่ระบุ')
                 sheet_no = result_json.get('sheet_number', f'แผ่นที่ {page_num + 1}')
                 title = result_json.get('project_type', 'แบบแปลนวิศวกรรม')
+                model_used = result_json.get('used_model', 'ไม่ระบุ')
                 
-                st.markdown(f"### 📄 [{dwg_no}] {sheet_no} : {title}")
+                st.markdown(f"### 📄 [{dwg_no}] {sheet_no} : {title} *(ประมวลผลด้วยโมเดล: {model_used})*")
                 
                 page = out_pdf.load_page(page_num)
                 draw_spatial_guided_annotation(page, result_json.get("issues", []))
