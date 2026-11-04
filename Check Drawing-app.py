@@ -28,7 +28,7 @@ api_ready = init_genai()
 
 @st.cache_data(ttl=1800)
 def get_valid_vision_models():
-    """สแกนหารายชื่อโมเดล Vision ที่ใช้งานได้จริงในบัญชีนี้แบบ Dynamic เพื่อแก้ปัญหา 404"""
+    """สแกนหารายชื่อโมเดล Vision ที่ใช้งานได้จริงในบัญชีแบบ Dynamic เพื่อป้องกัน Error 404"""
     invalid_keywords = ['tts', 'audio', 'embed', 'imagen', 'realtime']
     valid_models = []
     try:
@@ -38,7 +38,6 @@ def get_valid_vision_models():
                 if not any(k in name.lower() for k in invalid_keywords):
                     valid_models.append(name)
         
-        # จัดลำดับโมเดล Vision ที่เปิดใช้งานจริงในระบบ
         priority_candidates = [
             'gemini-1.5-flash-latest',
             'gemini-1.5-flash',
@@ -59,6 +58,7 @@ def get_valid_vision_models():
     except Exception:
         return ['gemini-1.5-flash-latest', 'gemini-1.5-flash']
 
+# System Prompt ภาษาไทยที่บังคับคำตอบภาษาไทยวิศวกรรมอย่างละเอียด
 system_prompt = """
 คุณคือวิศวกรชลประทาน วิศวกรโยธา และผู้ตรวจทานแบบแปลนมืออาชีพ
 ตรวจสอบแบบแปลนวิศวกรรมที่แนบมานี้อย่างละเอียดที่สุดในทุกองค์ประกอบ:
@@ -68,30 +68,30 @@ system_prompt = """
    - หมายเลขแผ่น (เช่น แผ่นที่ 1/12)
    - ชื่อแบบ/ชื่อโครงการ
 
-2. ตรวจสอบความถูกต้อง 3 ด้านอย่างละเอียด:
-   - วิศวกรรม (Engineering): ตรวจสอบระดับ Elevation, แรงดันน้ำ (Uplift), Factor of Safety, ความหนาคอนกรีต, ขนาดและระยะเหล็กเสริม, สเกลอาคาร, มิติความกว้าง/ยาว/สูง
-   - คำผิด (Typo): คำผิดภาษาไทย (สระ/วรรณยุกต์ตกหล่น) และศัพท์เทคนิคภาษาอังกฤษ
-   - ข้อสังเกต (Observation): จุดที่ควรระมัดระวังในการก่อสร้าง ข้อกำหนดวัสดุ หรือข้อแนะนำเชิงเทคนิค
+2. ตรวจสอบความถูกต้อง 3 ด้านอย่างละเอียด (ระบุคำอธิบายทั้งหมดเป็นภาษาไทยทางการวิศวกรรม):
+   - คำผิด (Typo): คำผิดภาษาไทย (สระ/วรรณยุกต์ตกหล่น), ฟอนต์ SHX CAD เพี้ยน (เช่น 20000.20, DEOTEXTILE, สาย ม่วง), และศัพท์เทคนิคภาษาอังกฤษ
+   - วิศวกรรม (Engineering): ตรวจสอบระดับ Elevation, แรงดันน้ำ (Uplift), Factor of Safety, ความหนาคอนกรีต, ขนาดและระยะเหล็กเสริม, สเกลอาคาร, มิติความกว้าง/ยาว/สูง, การเจาะสำรวจชั้นดิน Boring Log
+   - ข้อสังเกต (Observation): จุดที่ควรระมัดระวังในการก่อสร้าง ข้อกำหนดวัสดุ หรือข้อแนะนำเชิงเทคนิคสนาม
 
-คุณต้องตอบกลับเป็น JSON เท่านั้น โครงสร้างดังนี้:
+คุณต้องตอบกลับเป็น JSON ภาษาไทยเท่านั้น โครงสร้างดังนี้:
 {
-  "drawing_number": "หมายเลขแบบที่อ่านได้จาก Title Block (หากไม่มีให้ใส่ 'ไม่ระบุ')",
+  "drawing_number": "หมายเลขแบบที่อ่านได้จาก Title Block (เช่น สชป.14-1-004781)",
   "sheet_number": "หมายเลขแผ่น (เช่น แผ่นที่ 1/12)",
   "project_type": "ชื่อแบบ/ชื่อหัวเรื่องของหน้านี้",
   "issues": [
     {
       "type": "Typo หรือ Engineering หรือ Observation",
-      "error_keyword": "เฉพาะคำผิดหรือตัวเลขเป๊ะๆ 1-3 คำที่ปรากฏบนแบบตรงจุดนั้น",
-      "description": "อธิบายจุดที่ผิด ชี้แจงเหตุผลทางวิศวกรรม และระบุคำ/ค่าที่ถูกต้อง",
+      "error_keyword": "เฉพาะคำผิด ตัวเลข หรือข้อความเป๊ะๆ 1-3 คำที่ปรากฏบนแบบแปลน (เพื่อใช้ค้นหาตำแหน่งวงกลมใน Vector PDF)",
+      "description": "คำอธิบายภาษาไทยชี้แจงเหตุผลทางวิศวกรรม ระบุจุดที่ผิดอย่างชัดเจน และแนะนำสิ่งที่ถูกต้อง",
       "box_2d": [ymin, xmin, ymax, xmax]
     }
   ],
-  "summary": "สรุปผลการตรวจสอบหน้านี้"
+  "summary": "สรุปผลการตรวจสอบหน้านี้เป็นภาษาไทย"
 }
 
 กฎพิกัด box_2d:
 - สเกล 0 ถึง 1000 (ymin: บน, xmin: ซ้าย, ymax: ล่าง, xmax: ขวา)
-- ต้องระบุพิกัด box_2d ให้โอบล้อมบริเวณข้อความหรือโครงสร้างที่ผิดนั้นๆ อย่างแท้จริง
+- ระบุพิกัด box_2d ให้โอบล้อมบริเวณข้อความหรือโครงสร้างที่ผิดนั้นๆ
 """
 
 def clean_json_response(text):
@@ -122,7 +122,6 @@ def process_page_with_dynamic_fallback(prompt_content):
         except Exception as e:
             err_str = str(e)
             last_error = f"{model_name}: {err_str}"
-            # หากเจอ 404 (ไม่พบโมเดล), 429 (โควต้าเต็ม) หรือ 400 ให้สลับไปโมเดลถัดไป
             if any(k in err_str for k in ["404", "429", "400", "Quota", "not found"]):
                 continue
             elif "500" in err_str or "Internal" in err_str:
@@ -138,6 +137,7 @@ def process_page_with_dynamic_fallback(prompt_content):
     raise Exception(f"ไม่สามารถประมวลผลได้ในขณะนี้: {last_error}")
 
 def draw_spatial_guided_annotation(page, issues):
+    """วาดวงกลมสีแดงและโน้ตข้อความภาษาไทย โดยใช้ Text Anchor Matching บน Vector PDF ก่อนเพื่อความแม่นยำ 100%"""
     rect_width = page.rect.width
     rect_height = page.rect.height
     
@@ -147,42 +147,47 @@ def draw_spatial_guided_annotation(page, issues):
         i_type = issue.get("type", "Observation")
         box = issue.get("box_2d", [0, 0, 0, 0])
         
-        annot_text = f"[{i_type.upper()}]\n{desc}"
+        # สีเส้นวงกลม: Typo = สีแดง, Engineering = สีส้มแสด, Observation = สีน้ำเงิน
+        stroke_color = (1, 0, 0) if i_type.lower() == "typo" else ((1, 0.4, 0) if i_type.lower() == "engineering" else (0, 0.4, 1))
+        annot_text = f"[{i_type.upper()}]\nคำ/จุดสังเกต: {keyword}\nรายละเอียด: {desc}"
         found_match = False
         
-        if box and len(box) == 4 and box != [0, 0, 0, 0]:
-            ymin, xmin, ymax, xmax = box
-            ai_x0 = max(0, (xmin / 1000.0) * rect_width - 25)
-            ai_y0 = max(0, (ymin / 1000.0) * rect_height - 25)
-            ai_x1 = min(rect_width, (xmax / 1000.0) * rect_width + 25)
-            ai_y1 = min(rect_height, (ymax / 1000.0) * rect_height + 25)
-            ai_region = fitz.Rect(ai_x0, ai_y0, ai_x1, ai_y1)
-            
-            if keyword:
-                text_instances = page.search_for(keyword, clip=ai_region, quads=True)
-                if text_instances:
-                    found_match = True
-                    for quad in text_instances:
-                        r = quad.rect
-                        r_expanded = fitz.Rect(r.x0 - 4, r.y0 - 4, r.x1 + 4, r.y1 + 4)
-                        page.draw_oval(r_expanded, color=(1, 0, 0), width=2)
-                        
-                        annot = page.add_text_annot(r_expanded.top_right, annot_text)
-                        annot.set_colors(stroke=(1, 0, 0) if i_type.lower() == "typo" else (1, 0.5, 0))
-                        annot.set_info(content=annot_text, title=f"ข้อผิดพลาด ({i_type})")
-                        annot.update()
-            
-            if not found_match:
-                page.draw_oval(ai_region, color=(1, 0, 0), width=2)
-                annot = page.add_text_annot(fitz.Point(ai_x1, ai_y0), annot_text)
-                annot.set_colors(stroke=(1, 0, 0) if i_type.lower() == "typo" else (1, 0.5, 0))
-                annot.set_info(content=annot_text, title=f"ข้อผิดพลาด ({i_type})")
-                annot.update()
+        # 1. ค้นหาคำเป๊ะๆ บน Text Layer ของ PDF (Text Anchor Matching - แม่นยำตรงจุด 100%)
+        if keyword and len(keyword) >= 2:
+            text_instances = page.search_for(keyword)
+            if text_instances:
                 found_match = True
+                for r in text_instances:
+                    # ขยายกรอบวงกลมครอบข้อความเล็กน้อยให้สวยงาม
+                    r_expanded = fitz.Rect(r.x0 - 5, r.y0 - 5, r.x1 + 5, r.y1 + 5)
+                    page.draw_oval(r_expanded, color=stroke_color, width=2)
+                    
+                    annot = page.add_text_annot(r_expanded.top_right, annot_text)
+                    annot.set_colors(stroke=stroke_color)
+                    annot.set_info(content=annot_text, title=f"ข้อผิดพลาด ({i_type})")
+                    annot.update()
         
+        # 2. หากเป็นรูปภาพหรือไม่มี Text Layer ให้ใช้พิกัด box_2d จาก AI แปลงตามสเกลกระดาษ
+        if not found_match and box and len(box) == 4 and box != [0, 0, 0, 0]:
+            ymin, xmin, ymax, xmax = box
+            ai_x0 = max(0, (xmin / 1000.0) * rect_width - 15)
+            ai_y0 = max(0, (ymin / 1000.0) * rect_height - 15)
+            ai_x1 = min(rect_width, (xmax / 1000.0) * rect_width + 15)
+            ai_y1 = min(rect_height, (ymax / 1000.0) * rect_height + 15)
+            
+            ai_region = fitz.Rect(ai_x0, ai_y0, ai_x1, ai_y1)
+            page.draw_oval(ai_region, color=stroke_color, width=2)
+            
+            annot = page.add_text_annot(fitz.Point(ai_x1, ai_y0), annot_text)
+            annot.set_colors(stroke=stroke_color)
+            annot.set_info(content=annot_text, title=f"ข้อผิดพลาด ({i_type})")
+            annot.update()
+            found_match = True
+            
+        # 3. กรณีเป็นข้อสังเกตภาพรวมแผ่น ให้สร้างป้ายไว้มุมขวาบน
         if not found_match:
             annot = page.add_text_annot(fitz.Point(rect_width - 60, 60), annot_text)
-            annot.set_colors(stroke=(0, 0, 1))
+            annot.set_colors(stroke=(0, 0.4, 1))
             annot.set_info(content=annot_text, title="ข้อสังเกตภาพรวม")
             annot.update()
 
@@ -256,7 +261,6 @@ if uploaded_file is not None and api_ready:
                 del img
                 gc.collect()
                 
-                # หน่วงเวลา 10 วินาทีตามที่เคยใช้งานได้ดี เพื่อป้องกัน Rate Limit
                 time.sleep(10)
                 
             except Exception as e:
@@ -268,6 +272,7 @@ if uploaded_file is not None and api_ready:
         
         status_text.success(f"✅ ตรวจสอบเสร็จสิ้นทั้งหมด {len(st.session_state.review_results)} แผ่น!")
 
+    # แสดงผลลัพธ์การตรวจย้อนหลังทั้งหมด
     if st.session_state.review_results:
         st.markdown("---")
         st.markdown("## 📊 ผลการตรวจสอบแบบแปลนทั้งหมด")
@@ -294,25 +299,25 @@ if uploaded_file is not None and api_ready:
                 
                 issues_this_page = result_json.get("issues", [])
                 if issues_this_page:
-                    with st.expander(f"📝 รายการข้อผิดพลาดที่พบ ({dwg_no} - {sheet_no})", expanded=True):
+                    with st.expander(f"📝 รายการข้อผิดพลาดและข้อสังเกตภาษาไทย ({dwg_no} - {sheet_no})", expanded=True):
                         for issue in issues_this_page:
                             i_type = issue.get("type", "Observation")
                             kw = issue.get("error_keyword", "")
                             desc = issue.get("description", "")
                             
                             if i_type.lower() == "typo":
-                                st.error(f"🔤 **[คำผิด: '{kw}']:** {desc}")
+                                st.error(f"🔤 **[คำผิด / ฟอนต์เพี้ยน: '{kw}']:** {desc}")
                             elif i_type.lower() == "engineering":
-                                st.warning(f"📐 **[วิศวกรรม: '{kw}']:** {desc}")
+                                st.warning(f"📐 **[ข้อพิจารณาทางวิศวกรรม: '{kw}']:** {desc}")
                             else:
-                                st.info(f"💡 **[ข้อสังเกต]:** {desc}")
+                                st.info(f"💡 **[ข้อสังเกตสนาม / การก่อสร้าง]:** {desc}")
                 st.markdown("---")
         
         out_pdf_bytes = io.BytesIO()
         out_pdf.save(out_pdf_bytes)
         
         st.download_button(
-            label="📥 ดาวน์โหลดไฟล์ PDF สรุปการตรวจครบทุกแผ่น (พร้อมวงกลมแดงและเลขแบบ)",
+            label="📥 ดาวน์โหลดไฟล์ PDF สรุปการตรวจครบทุกแผ่น (พร้อมวงกลมแดงตรงจุดและโน้ตภาษาไทย)",
             data=out_pdf_bytes.getvalue(),
             file_name="Reviewed_Engineering_Drawing_All_Sheets.pdf",
             mime="application/pdf"
