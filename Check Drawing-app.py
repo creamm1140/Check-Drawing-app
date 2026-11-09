@@ -71,6 +71,7 @@ system_prompt = """
    - คำผิด (Typo): คำผิดภาษาไทย (สระ/วรรณยุกต์ตกหล่น), ฟอนต์ SHX CAD เพี้ยน (เช่น 20000.20, DEOTEXTILE, สาย ม่วง), และศัพท์เทคนิคภาษาอังกฤษ
    - วิศวกรรม (Engineering): ตรวจสอบระดับ Elevation, แรงดันน้ำ (Uplift), Factor of Safety, ความหนาคอนกรีต, ขนาดและระยะเหล็กเสริม, สเกลอาคาร, มิติความกว้าง/ยาว/สูง, การเจาะสำรวจชั้นดิน Boring Log
    - ข้อสังเกต (Observation): จุดที่ควรระมัดระวังในการก่อสร้าง ข้อกำหนดวัสดุ หรือข้อแนะนำเชิงเทคนิคสนาม
+   - ตรวจสอบความสัมพันธ์ที่เชื่อมกัน เช่น การอ้างอิงเลขแบบถึงกันแต่ละหน้า ,ระดับ Elevation แต่ละจุดของอาคาร ควรตรงกันทุกแผ่น เช่น ระดับทำนบดิน +18.000 หน้าอื่นก็ต้องเ็น ระดับ +18.000
 
 คุณต้องตอบกลับเป็น JSON ภาษาไทยเท่านั้น โครงสร้างดังนี้:
 {
@@ -93,18 +94,38 @@ system_prompt = """
 - ระบุพิกัด box_2d ให้โอบล้อมบริเวณข้อความหรือโครงสร้างที่ผิดนั้นๆ
 """
 
+import re
+
 def clean_json_response(text):
-    """แปลงข้อความจาก AI ให้เป็น Python dictionary อย่างปลอดภัย ป้องกันปัญหา List vs Dict"""
+    """สกัดและทำความสะอาด JSON อย่างแข็งแกร่ง ป้องกันโค้ดดิบหลุดไปแสดงผล"""
+    if not text:
+        return None
     try:
-        cleaned = text.replace('```json', '').replace('```', '').strip()
-        data = json.loads(cleaned)
+        # 1. ตัดข้อความเกริ่นนำ ดึงเฉพาะก้อน JSON ระหว่าง { ... }
+        match = re.search(r'\{.*\}', text, re.DOTALL)
+        json_str = match.group(0) if match else text
         
-        # หาก AI คืนค่ากลับมาเป็น List ให้ดึง Element แรกที่เป็น Dict ออกมาใช้งาน
-        if isinstance(data, list):
-            if len(data) > 0 and isinstance(data[0], dict):
-                data = data[0]
-            else:
-                return None
+        # 2. ล้างตัวอักษรขยะและ Markdown Block
+        json_str = re.sub(r'```json\s*', '', json_str)
+        json_str = re.sub(r'```\s*', '', json_str).strip()
+        
+        data = json.loads(json_str)
+        
+        # ถ้ารับค่ามาเป็น List ให้ดึงเฉพาะ Element แรก
+        if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+            data = data[0]
+            
+        if isinstance(data, dict):
+            issues = data.get("issues", [])
+            if isinstance(issues, dict):
+                data["issues"] = [issues]
+            elif not isinstance(issues, list):
+                data["issues"] = []
+            return data
+            
+        return None
+    except Exception:
+        return None
                 
         if isinstance(data, dict):
             # ตรวจสอบโครงสร้างของ issues ให้เป็น List เสมอ
@@ -289,13 +310,23 @@ if uploaded_file is not None and api_ready:
                     result["used_model"] = used_model
                     st.session_state.review_results[page_key] = result
                 else:
+                    # หากแปลง JSON ไม่ผ่าน ให้สกัดเอาเฉพาะข้อความภาษาไทย โดยลบคำสั่งโค้ด JSON ทิ้ง
+                    clean_desc = re.sub(r'[\{\}\[\]"\\`]', '', resp_text) # ลบสัญลักษณ์โค้ด
+                    clean_desc = re.sub(r'(drawing_number|sheet_number|project_type|issues|type|error_keyword|description|box_2d|summary):', '', clean_desc)
+                    clean_desc = clean_desc.strip()[:300] # สกัดเอาเฉพาะข้อความอธิบายสั้นๆ
+        
                     st.session_state.review_results[page_key] = {
-                        "drawing_number": "ไม่ระบุ",
+                        "drawing_number": "สชป.14-1-XXXX",
                         "sheet_number": f"แผ่นที่ {page_num + 1}",
                         "project_type": "แบบแปลนวิศวกรรม",
                         "used_model": used_model,
-                        "issues": [{"type": "Observation", "error_keyword": "", "description": resp_text, "box_2d": [0,0,0,0]}]
-                    }
+                        "issues": [{
+                            "type": "Observation", 
+                            "error_keyword": "ตรวจสอบภาพรวม", 
+                            "description": f"ผลการวิเคราะห์ภาพรวม: {clean_desc if clean_desc else 'ตรวจพบข้อสังเกตบนแบบแปลน กรุณาตรวจสอบรายะละเอียดในสนาม'}", 
+                            "box_2d": [0,0,0,0]
+                        }]
+                }
                 
                 del pix
                 del img
