@@ -306,61 +306,103 @@ if uploaded_file is not None and api_ready:
     if run_btn:
         progress_bar = st.progress(0)
         status_text = st.empty()
-        current_dpi = 150
         
+        # กล่องสำหรับแสดงเกร็ดมาตรฐานชลประทานสลับไปมาระหว่างรอ
+        tip_box = st.empty()
+        
+        # สร้างพื้นที่สำหรับแสดงผลลัพธ์ทีละแผ่นสดๆ (Live Incremental Section)
+        st.markdown("### 🟢 ผลการตรวจสอบแบบแปลน (แสดงผลสดทีละแผ่น)")
+        live_results_area = st.container()
+
+        current_dpi = 150
         processed_count = 0
         total_selected = len(pages_to_process)
+        out_pdf = fitz.open(stream=uploaded_file.getvalue(), filetype="pdf")
         
         for idx, page_num in enumerate(pages_to_process):
             page_key = f"{uploaded_file.name}_page_{page_num}"
             
-            if page_key in st.session_state.review_results:
-                processed_count += 1
-                progress_bar.progress(processed_count / total_selected)
-                continue
+            # สุ่มเกร็ดมาตรฐานวิศวกรรมแสดงให้อ่านระหว่างรอแผ่นถัดไป
+            with tip_box:
+                render_engineering_tips()
                 
-            status_text.info(f"⏳ กำลังวิเคราะห์แผ่นที่ {page_num + 1} จากทั้งหมด {total_pages} แผ่น (หน่วงเวลา 10 วินาทีเพื่อความเสถียร)...")
+            if page_key not in st.session_state.review_results:
+                status_text.info(f"⏳ กำลังวิเคราะห์แผ่นที่ {page_num + 1} จากทั้งหมด {total_pages} แผ่น...")
+                
+                page = doc.load_page(page_num)
+                pix = page.get_pixmap(dpi=current_dpi)
+                img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
+                
+                try:
+                    resp_text, used_model = process_page_with_dynamic_fallback(img)
+                    result = clean_json_response(resp_text)
+                    
+                    if isinstance(result, dict):
+                        result["used_model"] = used_model
+                        st.session_state.review_results[page_key] = result
+                    else:
+                        clean_desc = re.sub(r'[\{\}\[\]"\\\\`]', '', resp_text)
+                        clean_desc = re.sub(r'(drawing_number|sheet_number|project_type|issues|type|error_keyword|description|box_2d|summary):', '', clean_desc)
+                        clean_desc = clean_desc.strip()[:300]
             
-            page = doc.load_page(page_num)
-            pix = page.get_pixmap(dpi=current_dpi)
-            img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
-            
-            try:
-                # เรียกใช้งานโดยส่งภาพเข้าไปอย่างเดียว (system_prompt ถูกแยกไว้ใน system_instruction แล้ว)
-                resp_text, used_model = process_page_with_dynamic_fallback(img)
-                result = clean_json_response(resp_text)
-                
-                if isinstance(result, dict):
-                    result["used_model"] = used_model
-                    st.session_state.review_results[page_key] = result
-                else:
-                    # หากแปลง JSON ไม่ผ่าน ให้ใช้ข้อความมาตรฐานทางการวิศวกรรม ป้องกันข้อความภาษาอังกฤษหลุด
-                    st.session_state.review_results[page_key] = {
-                        "drawing_number": "สชป.14-1-XXXX",
-                        "sheet_number": f"แผ่นที่ {page_num + 1}",
-                        "project_type": "แบบแปลนวิศวกรรม",
-                        "used_model": used_model,
-                        "issues": [{
-                            "type": "Observation", 
-                            "error_keyword": "ตรวจสอบภาพรวม", 
-                            "description": "ตรวจพบข้อสังเกตภาพรวมบนแบบแปลน กรุณาตรวจสอบรายละเอียดเพิ่มเติมในสนาม", 
-                            "box_2d": [0,0,0,0]
-                        }]
-                    }
-                
-                del pix
-                del img
-                gc.collect()
-                
-                time.sleep(10)
-                
-            except Exception as e:
-                st.error(f"❌ แผ่นที่ {page_num + 1} เกิดข้อผิดพลาด: {e}")
-                continue
-            
+                        st.session_state.review_results[page_key] = {
+                            "drawing_number": "สชป.14-1-XXXX",
+                            "sheet_number": f"แผ่นที่ {page_num + 1}",
+                            "project_type": "แบบแปลนวิศวกรรม",
+                            "used_model": used_model,
+                            "issues": [{
+                                "type": "Observation", 
+                                "error_keyword": "ตรวจสอบภาพรวม", 
+                                "description": f"ผลการวิเคราะห์ภาพรวม: {clean_desc if clean_desc else 'ตรวจพบข้อสังเกตบนแบบแปลน กรุณาตรวจสอบรายละเอียดในสนาม'}", 
+                                "box_2d": [0,0,0,0]
+                            }]
+                        }
+                    
+                    del pix
+                    del img
+                    gc.collect()
+                    
+                except Exception as e:
+                    st.error(f"❌ แผ่นที่ {page_num + 1} เกิดข้อผิดพลาด: {e}")
+                    continue
+
+            # --- แสดงผลลัพธ์ของแผ่นที่พึ่งตรวจเสร็จทันที (Incremental Render) ---
+            result_json = st.session_state.review_results[page_key]
+            dwg_no = result_json.get('drawing_number', 'ไม่ระบุ')
+            sheet_no = result_json.get('sheet_number', f'แผ่นที่ {page_num + 1}')
+            title = result_json.get('project_type', 'แบบแปลนวิศวกรรม')
+            model_used = result_json.get('used_model', 'ไม่ระบุ')
+
+            with live_results_area:
+                with st.expander(f"📄 [{dwg_no}] {sheet_no} : {title} (ตรวจเสร็จแล้ว)", expanded=True):
+                    live_page = out_pdf.load_page(page_num)
+                    draw_spatial_guided_annotation(live_page, result_json.get("issues", []))
+                    
+                    pix_annotated = live_page.get_pixmap(dpi=120)
+                    img_annotated = Image.open(io.BytesIO(pix_annotated.tobytes("png")))
+                    st.image(img_annotated, use_container_width=True)
+                    
+                    issues_this_page = result_json.get("issues", [])
+                    if isinstance(issues_this_page, list) and issues_this_page:
+                        for issue in issues_this_page:
+                            if not isinstance(issue, dict):
+                                continue
+                            i_type = str(issue.get("type", "Observation"))
+                            kw = str(issue.get("error_keyword", ""))
+                            desc = str(issue.get("description", ""))
+                            
+                            if i_type.lower() == "typo":
+                                st.error(f"🔤 **[คำผิด / ฟอนต์เพี้ยน: '{kw}']:** {desc}")
+                            elif i_type.lower() == "engineering":
+                                st.warning(f"📐 **[ข้อพิจารณาทางวิศวกรรม: '{kw}']:** {desc}")
+                            else:
+                                st.info(f"💡 **[ข้อสังเกตสนาม / การก่อสร้าง]:** {desc}")
+
             processed_count += 1
             progress_bar.progress(processed_count / total_selected)
+            time.sleep(10) # หน่วงเวลาตามมาตรฐานโควต้าฟรี
         
+        tip_box.empty() # ล้างกล่องเกร็ดความรู้เมื่อตรวจเสร็จครบทั้งหมด
         status_text.success(f"✅ ตรวจสอบเสร็จสิ้นทั้งหมด {len(st.session_state.review_results)} แผ่น!")
 
     if st.session_state.review_results:
