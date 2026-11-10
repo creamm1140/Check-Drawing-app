@@ -313,18 +313,15 @@ if uploaded_file is not None and api_ready:
             img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
             
             try:
-                resp_text, used_model = process_page_with_dynamic_fallback([system_prompt, img])
+                # เรียกใช้งานโดยส่งภาพเข้าไปอย่างเดียว (system_prompt ถูกแยกไว้ใน system_instruction แล้ว)
+                resp_text, used_model = process_page_with_dynamic_fallback(img)
                 result = clean_json_response(resp_text)
                 
                 if isinstance(result, dict):
                     result["used_model"] = used_model
                     st.session_state.review_results[page_key] = result
                 else:
-                    # หากแปลง JSON ไม่ผ่าน ให้สกัดเอาเฉพาะข้อความภาษาไทย โดยลบคำสั่งโค้ด JSON ทิ้ง
-                    clean_desc = re.sub(r'[\{\}\[\]"\\\\`]', '', resp_text) # ลบสัญลักษณ์โค้ด
-                    clean_desc = re.sub(r'(drawing_number|sheet_number|project_type|issues|type|error_keyword|description|box_2d|summary):', '', clean_desc)
-                    clean_desc = clean_desc.strip()[:300] # สกัดเอาเฉพาะข้อความอธิบายสั้นๆ
-        
+                    # หากแปลง JSON ไม่ผ่าน ให้ใช้ข้อความมาตรฐานทางการวิศวกรรม ป้องกันข้อความภาษาอังกฤษหลุด
                     st.session_state.review_results[page_key] = {
                         "drawing_number": "สชป.14-1-XXXX",
                         "sheet_number": f"แผ่นที่ {page_num + 1}",
@@ -333,7 +330,7 @@ if uploaded_file is not None and api_ready:
                         "issues": [{
                             "type": "Observation", 
                             "error_keyword": "ตรวจสอบภาพรวม", 
-                            "description": f"ผลการวิเคราะห์ภาพรวม: {clean_desc if clean_desc else 'ตรวจพบข้อสังเกตบนแบบแปลน กรุณาตรวจสอบรายละเอียดในสนาม'}", 
+                            "description": "ตรวจพบข้อสังเกตภาพรวมบนแบบแปลน กรุณาตรวจสอบรายละเอียดเพิ่มเติมในสนาม", 
                             "box_2d": [0,0,0,0]
                         }]
                     }
