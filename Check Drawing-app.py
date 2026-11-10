@@ -144,16 +144,22 @@ def generate_export_filename(project_name="ฝายพุม่วงพร้�
         
     return f"{date_str} Verified-{clean_project_name}.{extension}"
 
-def process_page_with_dynamic_fallback(prompt_content):
-    """ส่งคำขอไปยังโมเดลที่เปิดใช้งานจริง หากเจอ 404 หรือ 429 จะสลับโมเดลให้อัตโนมัติ"""
+def process_page_with_dynamic_fallback(img):
+    """ส่งคำขอไปยังโมเดลที่เปิดใช้งานจริง โดยตั้งค่า system_instruction แยก เพื่อป้องกัน AI ทวนคำสั่ง"""
     models_to_try = get_valid_vision_models()
     last_error = None
     
+    prompt_user = "กรุณาตรวจสอบแบบแปลนวิศวกรรมนี้ตามคำสั่ง และส่งคืนผลลัพธ์เป็น JSON ภาษาไทยตามโครงสร้างที่กำหนดเท่านั้น"
+    
     for model_name in models_to_try:
         try:
-            model = genai.GenerativeModel(model_name)
+            # กำหนด system_instruction แยกจาก Prompt ป้องกันคำสั่งหลุดเข้าเนื้อหา
+            model = genai.GenerativeModel(
+                model_name=model_name,
+                system_instruction=system_prompt
+            )
             response = model.generate_content(
-                prompt_content,
+                [prompt_user, img],
                 generation_config=genai.GenerationConfig(
                     response_mime_type="application/json",
                     temperature=0.0,
@@ -170,7 +176,7 @@ def process_page_with_dynamic_fallback(prompt_content):
             elif "500" in err_str or "Internal" in err_str:
                 time.sleep(3)
                 try:
-                    response = model.generate_content(prompt_content)
+                    response = model.generate_content([prompt_user, img])
                     return response.text, model_name
                 except Exception:
                     continue
